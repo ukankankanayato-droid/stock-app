@@ -1,57 +1,51 @@
 import streamlit as st
-import yfinance as yf
-import pandas as pd
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="株価分析アプリ", layout="wide", initial_sidebar_state="collapsed")
 
 st.title("📈 株価分析アプリ")
 
-# 主要銘柄リスト（銘柄名から選択可能）
+# 主要銘柄リスト
 STOCK_DICT = {
-    "直接入力（コード指定）": "CUSTOM",
-    "トヨタ自動車 (7203)": "7203.T",
-    "ソニーグループ (6758)": "6758.T",
-    "三菱UFJ FG (8306)": "8306.T",
-    "ソフトバンクG (9984)": "9984.T",
-    "キーエンス (6861)": "6861.T",
-    "東京エレクトロン (8035)": "8035.T",
-    "レーザーテック (6920)": "6920.T",
-    "ファーストリテイリング (9983)": "9983.T",
-    "NTT (9432)": "9432.T",
-    "任天堂 (7974)": "7974.T",
-    "日立製作所 (6501)": "6501.T",
-    "信越化学工業 (4063)": "4063.T",
-    "三井住友FG (8316)": "8316.T",
-    "伊藤忠商事 (8001)": "8001.T",
-    "三菱商事 (8058)": "8058.T",
+    "トヨタ自動車 (7203)": "TSE:7203",
+    "ソニーグループ (6758)": "TSE:6758",
+    "三菱UFJ FG (8306)": "TSE:8306",
+    "ソフトバンクG (9984)": "TSE:9984",
+    "キーエンス (6861)": "TSE:6861",
+    "東京エレクトロン (8035)": "TSE:8035",
+    "レーザーテック (6920)": "TSE:6920",
+    "ファーストリテイリング (9983)": "TSE:9983",
+    "NTT (9432)": "TSE:9432",
+    "任天堂 (7974)": "TSE:7974",
+    "日立製作所 (6501)": "TSE:6501",
+    "三井住友FG (8316)": "TSE:8316",
+    "三菱商事 (8058)": "TSE:8058",
 }
 
-# 銘柄選択（プルダウン）
-selected_option = st.selectbox("銘柄を選択または直接入力", list(STOCK_DICT.keys()))
+# 銘柄選択
+selected_option = st.selectbox("銘柄を選択", list(STOCK_DICT.keys()))
+symbol = STOCK_DICT[selected_option]
 
-if STOCK_DICT[selected_option] == "CUSTOM":
-    user_input = st.text_input("銘柄コードを入力（例: 7203）", "7203")
-else:
-    user_input = STOCK_DICT[selected_option]
+# TradingView チャート埋め込み
+tv_html = f"""
+<div class="tradingview-widget-container" style="height:100%;width:100%">
+  <div id="tradingview_chart" style="height:500px;width:100%"></div>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script type="text/javascript">
+  new TradingView.widget({{
+    "autosize": true,
+    "symbol": "{symbol}",
+    "interval": "D",
+    "timezone": "Asia/Tokyo",
+    "theme": "dark",
+    "style": "1",
+    "locale": "ja",
+    "enable_publishing": false,
+    "allow_symbol_change": true,
+    "container_id": "tradingview_chart"
+  }});
+  </script>
+</div>
+"""
 
-# 入力値の整形（数字4桁の場合は自動で末尾に .T を付与）
-raw_code = user_input.strip().upper()
-if raw_code.isdigit() and len(raw_code) == 4:
-    ticker_symbol = f"{raw_code}.T"
-else:
-    ticker_symbol = raw_code
-
-# データ取得処理
-if ticker_symbol:
-    try:
-        stock = yf.Ticker(ticker_symbol)
-        df = stock.history(period="6m")
-        
-        if df.empty:
-            st.error("株価データが取得できませんでした。銘柄コードを確認してください。")
-        else:
-            latest_price = df['Close'].iloc[-1]
-            st.metric(label=f"対象銘柄: {ticker_symbol} (最新終値)", value=f"{latest_price:,.1f} 円")
-            st.line_chart(df['Close'])
-    except Exception as e:
-        st.error(f"データ取得エラーが発生しました: {e}")
+components.html(tv_html, height=520)
