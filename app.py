@@ -26,10 +26,13 @@ STOCK_DICT = {
 selected_option = st.selectbox("銘柄を選択", list(STOCK_DICT.keys()))
 symbol = STOCK_DICT[selected_option]
 
+# ID用文字列の整形（特殊文字を除去）
+container_id = f"tv_{symbol.replace(':', '_')}"
+
 # TradingView チャート埋め込み
 tv_html = f"""
 <div class="tradingview-widget-container" style="height:100%;width:100%">
-  <div id="tradingview_chart" style="height:500px;width:100%"></div>
+  <div id="{container_id}" style="height:500px;width:100%"></div>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <script type="text/javascript">
   new TradingView.widget({{
@@ -42,10 +45,11 @@ tv_html = f"""
     "locale": "ja",
     "enable_publishing": false,
     "allow_symbol_change": true,
-    "container_id": "tradingview_chart"
+    "container_id": "{container_id}"
   }});
   </script>
 </div>
 """
 
-components.html(tv_html, height=520)
+# keyを指定して銘柄変更時にコンポーネントを再作成
+components.html(tv_html, height=520, key=f"chart_{symbol}")
