@@ -1,5 +1,4 @@
 import datetime
-import io
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -41,7 +40,6 @@ else:
   code = STOCK_DICT[selected_option]
 
 
-# データ取得関数（5分間キャッシュしてサーバー負荷と通信制限を防止）
 @st.cache_data(ttl=300)
 def fetch_stock_data(symbol_code):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
@@ -67,13 +65,22 @@ def fetch_stock_data(symbol_code):
         "Date": [
             datetime.datetime.fromtimestamp(ts) for ts in timestamps
         ],
-        "Open": quote["open"],
-        "High": quote["high"],
-        "Low": quote["low"],
-        "Close": quote["close"],
-        "Volume": quote["volume"],
+        "Open": quote.get("open", []),
+        "High": quote.get("high", []),
+        "Low": quote.get("low", []),
+        "Close": quote.get("close", []),
+        "Volume": quote.get("volume", []),
     })
-    df = df.dropna().reset_index(drop=True)
+
+    # 出来高の空データを0で埋め、株価が存在するデータのみ抽出
+    df["Volume"] = df["Volume"].fillna(0)
+    df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(
+        drop=True
+    )
+
+    # 日付表示のフォーマット（土日の空白期間を詰めて綺麗に表示）
+    df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
+
     return df
   except Exception:
     return None
@@ -87,7 +94,7 @@ if code:
         "株価データが取得できませんでした。銘柄コードを確認するか、少し時間をおいて再度お試しください。"
     )
   else:
-    # 5日・25日移動平均線
+    # 移動平均線（5日・25日）
     df["SMA5"] = df["Close"].rolling(window=5).mean()
     df["SMA25"] = df["Close"].rolling(window=25).mean()
 
@@ -108,7 +115,7 @@ if code:
     # ローソク足
     fig.add_trace(
         go.Candlestick(
-            x=df["Date"],
+            x=df["DateStr"],
             open=df["Open"],
             high=df["High"],
             low=df["Low"],
@@ -122,7 +129,7 @@ if code:
     # 移動平均線
     fig.add_trace(
         go.Scatter(
-            x=df["Date"],
+            x=df["DateStr"],
             y=df["SMA5"],
             mode="lines",
             name="5日線",
@@ -133,7 +140,7 @@ if code:
     )
     fig.add_trace(
         go.Scatter(
-            x=df["Date"],
+            x=df["DateStr"],
             y=df["SMA25"],
             mode="lines",
             name="25日線",
@@ -146,7 +153,10 @@ if code:
     # 出来高
     fig.add_trace(
         go.Bar(
-            x=df["Date"], y=df["Volume"], name="出来高", marker_color="gray"
+            x=df["DateStr"],
+            y=df["Volume"],
+            name="出来高",
+            marker_color="gray",
         ),
         row=2,
         col=1,
@@ -159,5 +169,8 @@ if code:
         height=500,
         showlegend=False,
     )
+
+    # X軸カテゴリ化（土日の隙間をなくし、全期間のローソク足を適正表示）
+    fig.update_xaxes(type="category")
 
     st.plotly_chart(fig, use_container_width=True)
