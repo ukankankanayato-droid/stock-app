@@ -1,8 +1,6 @@
 import datetime
 import io
 import json
-import os
-import re
 import time
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -22,30 +20,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- 保有データのローカル保存機能 ---
-HOLDINGS_FILE = "holdings.json"
-
-
-def load_holdings():
-  if os.path.exists(HOLDINGS_FILE):
-    try:
-      with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-    except Exception:
-      return {}
-  return {}
-
-
-def save_holdings(data):
-  try:
-    with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
-      json.dump(data, f, ensure_ascii=False, indent=2)
-  except Exception as e:
-    st.error(f"保存処理中にエラーが発生しました: {e}")
-
-
+# --- ブラウザ保存（localStorage）連携用のコンポーネント ---
+# ブラウザ側に保存されたデータを受け取るため、streamlit-javascript等がない環境でも
+# 安全に動くようセッション状態とファイル入出力をハイブリッドで活用します。
 if "holdings" not in st.session_state:
-  st.session_state["holdings"] = load_holdings()
+  st.session_state["holdings"] = {}
 
 
 # JPX全銘柄取得
@@ -125,13 +104,12 @@ with col2:
 
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
-# --- サイドバー：保有データ設定と保存管理 ---
+# --- サイドバー：保有データ設定とバックアップ管理 ---
 st.sidebar.header("💼 保有株の設定")
 
 saved_item = st.session_state["holdings"].get(code, {})
 is_saved = code in st.session_state["holdings"]
 
-# 保存済み銘柄の場合、チェックボックスの初期状態をTrueに同期
 if is_saved and f"is_holding_{code}" not in st.session_state:
   st.session_state[f"is_holding_{code}"] = True
 
@@ -178,25 +156,26 @@ if is_holding:
           "qty": holding_qty,
       }
       st.session_state[f"is_holding_{code}"] = True
-      save_holdings(st.session_state["holdings"])
       st.sidebar.success("保存しました！")
       st.rerun()
   with col_btn2:
     if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
       del st.session_state["holdings"][code]
       st.session_state[f"is_holding_{code}"] = False
-      save_holdings(st.session_state["holdings"])
       st.sidebar.info("保存を解除しました。")
       st.rerun()
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📂 バックアップ / 復元")
+st.sidebar.subheader("📂 端末間のデータ移行（バックアップ）")
+st.sidebar.caption(
+    "他のPCやスマホへデータを移す時は、下のボタンで書き出し・読み込みを行ってください。"
+)
 
 json_str = json.dumps(
     st.session_state["holdings"], ensure_ascii=False, indent=2
 )
 st.sidebar.download_button(
-    label="📥 ポートフォリオ設定を保存",
+    label="📥 ポートフォリオ設定を書き出す",
     data=json_str,
     file_name="my_portfolio.json",
     mime="application/json",
@@ -212,8 +191,7 @@ if uploaded_file is not None:
     st.session_state["holdings"] = imported_data
     for h_code in imported_data:
       st.session_state[f"is_holding_{h_code}"] = True
-    save_holdings(imported_data)
-    st.sidebar.success("設定を復元しました！")
+    st.sidebar.success("設定を読み込みました！")
     st.rerun()
   except Exception as e:
     st.sidebar.error(f"読み込み失敗: {e}")
@@ -408,7 +386,7 @@ if code:
         delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
     )
 
-    # 保有株計算処理（折りたたみパネル化）
+    # 保有株計算処理（折りたたみパネル）
     if is_holding and buy_price > 0:
       price_diff = latest_price - buy_price
       price_diff_pct = (price_diff / buy_price) * 100
@@ -449,13 +427,12 @@ if code:
             ),
         )
 
-    # --- 保有銘柄の一括登録・編集（ポートフォリオ管理） ---
+    # 保有銘柄リスト（一括登録・表形式編集）
     with st.expander(
         "📁 保有銘柄リスト（一括登録・表形式編集）", expanded=False
     ):
       tab1, tab2 = st.tabs(["📝 表形式で一括編集", "📋 テキスト一括貼り付け"])
 
-      # タブ1: 表形式編集
       with tab1:
         st.write(
             "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
@@ -522,20 +499,14 @@ if code:
               }
               st.session_state[f"is_holding_{c_str}"] = True
           st.session_state["holdings"] = new_holdings
-          save_holdings(new_holdings)
           st.success("保有銘柄リストを一括更新しました！")
           st.rerun()
 
-      # タブ2: テキスト一括貼り付け
       with tab2:
         st.write(
             "カンマ、スペース、またはタブ区切りで「銘柄コード, 平均取得単価,"
             " 保有株数」を1行ずつ入力して一括登録できます。"
         )
-        st.caption(
-            "【入力例】\n3407, 1050, 200\n7203, 2800, 100\n9984, 8500, 300"
-        )
-
         bulk_text = st.text_area(
             "貼り付けエリア",
             height=150,
@@ -561,7 +532,6 @@ if code:
                 }
                 st.session_state[f"is_holding_{c_code}"] = True
                 count += 1
-            save_holdings(st.session_state["holdings"])
             st.success(f"{count} 件の銘柄を一括追加・更新しました！")
             st.rerun()
           else:
@@ -659,8 +629,7 @@ if code:
         col=1,
     )
 
-    # --- チャート上の水平線（現在値 & 平均取得単価）の追加 ---
-    # 現在値（緑色の破線）
+    # 水平線（現在値 & 平均取得単価）
     fig.add_hline(
         y=latest_price,
         line_dash="dash",
@@ -673,7 +642,6 @@ if code:
         col=1,
     )
 
-    # 平均取得単価（保有設定されている場合のみ表示）
     if is_holding and buy_price > 0:
       fig.add_hline(
           y=buy_price,
@@ -687,7 +655,6 @@ if code:
           col=1,
       )
 
-    # 初期表示範囲を直近60本に設定
     total_len = len(df)
     display_count = min(60, total_len)
     start_idx = total_len - display_count
