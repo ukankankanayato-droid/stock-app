@@ -1,4 +1,5 @@
 import datetime
+import io
 import time
 import pandas as pd
 import plotly.graph_objects as go
@@ -12,7 +13,59 @@ st.set_page_config(
 
 st.title("📈 株価分析アプリ")
 
-# 時間足の定義マップ (表示名: (interval, 取得日数, 短期移動平均, 長期移動平均))
+
+# 日本取引所グループ(JPX)公式から全上場銘柄データ（約4,000銘柄）を取得してキャッシュ
+@st.cache_data(ttl=86400)
+def get_all_jpx_stocks():
+  url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+  try:
+    res = requests.get(url, headers=headers, timeout=10)
+    df = pd.read_excel(io.BytesIO(res.content))
+
+    # コードを4桁文字列に整形
+    df["コード"] = df["コード"].astype(str).str.zfill(4)
+    df = df[df["コード"].str.len() == 4]
+
+    # ドロップダウン検索用フォーマット (例: "3407 | 旭化成 (プライム)")
+    df["label"] = (
+        df["コード"]
+        + " | "
+        + df["銘柄名"]
+        + " ("
+        + df["市場・商品区分"].astype(str)
+        + ")"
+    )
+    options = df["label"].tolist()
+    code_map = dict(zip(df["label"], df["コード"]))
+    return options, code_map
+  except Exception:
+    # ネットワークエラー等のフォールバックリスト
+    default_options = [
+        "3407 | 旭化成 (プライム)",
+        "7203 | トヨタ自動車 (プライム)",
+        "9984 | ソフトバンクグループ (プライム)",
+        "6758 | ソニーグループ (プライム)",
+        "8306 | 三菱UFJフィナンシャル・グループ (プライム)",
+        "6861 | キーエンス (プライム)",
+        "8035 | 東京エレクトロン (プライム)",
+        "6920 | レーザーテック (プライム)",
+        "9983 | ファーストリテイリング (プライム)",
+        "9432 | 日本電信電話 (プライム)",
+        "7974 | 任天堂 (プライム)",
+        "6501 | 日立製作所 (プライム)",
+    ]
+    default_map = {opt: opt.split(" | ")[0] for opt in default_options}
+    return default_options, default_map
+
+
+stock_options, code_map = get_all_jpx_stocks()
+
+# 時間足マップ
 TIMEFRAMES = {
     "1分足": ("1m", 1, 5, 25),
     "2分足": ("2m", 2, 5, 25),
@@ -28,11 +81,19 @@ TIMEFRAMES = {
 col1, col2 = st.columns([2, 1])
 
 with col1:
-  user_input = st.text_input(
-      "銘柄コードまたは銘柄名を入力（例: 3407, 旭化成, トヨタ, 9984）",
-      value="旭化成",
-      placeholder="例: 3407 または 旭化成",
+  # 初期選択位置（デフォルト: 旭化成）
+  default_idx = 0
+  for i, opt in enumerate(stock_options):
+    if "3407" in opt:
+      default_idx = i
+      break
+
+  selected_stock = st.selectbox(
+      "銘柄を検索・選択（コードや銘柄名の一部を入力すると候補が出ます）",
+      options=stock_options,
+      index=default_idx,
   )
+  code = code_map.get(selected_stock, "3407")
 
 with col2:
   selected_tf = st.selectbox(
@@ -42,79 +103,8 @@ with col2:
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
 
-# 銘柄名・コードからTickerシンボルを自動判定する関数
-def resolve_ticker(query):
-  query = query.strip()
-  if not query:
-    return None, None
-
-  # 数字のみ（4桁など）の場合は直接指定
-  if query.isdigit():
-    return f"{query}.T", query
-
-  # 主要銘柄の高速検索辞書
-  COMMON_STOCKS = {
-      "旭化成": ("3407.T", "3407 旭化成"),
-      "ソフトバンク": ("9984.T", "9984 ソフトバンクG"),
-      "ソフトバンクg": ("9984.T", "9984 ソフトバンクG"),
-      "ソフトバンクグループ": ("9984.T", "9984 ソフトバンクG"),
-      "トヨタ": ("7203.T", "7203 トヨタ自動車"),
-      "トヨタ自動車": ("7203.T", "7203 トヨタ自動車"),
-      "ソニー": ("6758.T", "6758 ソニーグループ"),
-      "ソニーグループ": ("6758.T", "6758 ソニーグループ"),
-      "三菱ufj": ("8306.T", "8306 三菱UFJ FG"),
-      "キーエンス": ("6861.T", "6861 キーエンス"),
-      "東京エレクトロン": ("8035.T", "8035 東京エレクトロン"),
-      "レーザーテック": ("6920.T", "6920 レーザーテック"),
-      "ファーストリテイリング": (
-          "9983.T",
-          "9983 ファーストリテイリング",
-      ),
-      "ユニクロ": ("9983.T", "9983 ファーストリテイリング"),
-      "ntt": ("9432.T", "9432 NTT"),
-      "任天堂": ("7974.T", "7974 任天堂"),
-      "日立": ("6501.T", "6501 日立製作所"),
-      "日立製作所": ("6501.T", "6501 日立製作所"),
-      "三井住友": ("8316.T", "8316 三井住友FG"),
-      "三菱商事": ("8058.T", "8058 三菱商事"),
-  }
-
-  q_lower = query.lower()
-  if q_lower in COMMON_STOCKS:
-    return COMMON_STOCKS[q_lower]
-
-  # 辞書にない銘柄名はYahoo Financeの検索APIで自動補完
-  headers = {
-      "User-Agent": (
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-      )
-  }
-  search_url = f"https://query2.finance.yahoo.com/1/finance/search?q={query}&quotesCount=5&newsCount=0"
-
-  try:
-    res = requests.get(search_url, headers=headers, timeout=5)
-    if res.status_code == 200:
-      quotes = res.json().get("quotes", [])
-      for q in quotes:
-        symbol = q.get("symbol", "")
-        if symbol.endswith(".T"):
-          short_name = q.get("shortname") or q.get("longname") or query
-          code_num = symbol.replace(".T", "")
-          return symbol, f"{code_num} {short_name}"
-      if quotes:
-        sym = quotes[0].get("symbol")
-        name = (
-            quotes[0].get("shortname") or quotes[0].get("longname") or query
-        )
-        return sym, f"{sym} {name}"
-  except Exception:
-    pass
-
-  return f"{query}.T", query
-
-
-def fetch_stock_data(symbol, interval, days):
+def fetch_stock_data(symbol_code, interval, days):
+  ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
   start_ts = end_ts - (days * 86400)
 
@@ -125,12 +115,12 @@ def fetch_stock_data(symbol, interval, days):
       )
   }
 
-  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?period1={start_ts}&period2={end_ts}&interval={interval}"
+  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval={interval}"
 
   try:
     res = requests.get(url, headers=headers, timeout=10)
     if res.status_code != 200:
-      url = f"https://query2.finance.yahoo.com/v8/finance/chart/{symbol}?period1={start_ts}&period2={end_ts}&interval={interval}"
+      url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval={interval}"
       res = requests.get(url, headers=headers, timeout=10)
       if res.status_code != 200:
         return None
@@ -176,89 +166,83 @@ def fetch_stock_data(symbol, interval, days):
     return None
 
 
-if user_input:
-  symbol, display_label = resolve_ticker(user_input)
+if code:
+  df = fetch_stock_data(code, interval, days)
 
-  if symbol:
-    df = fetch_stock_data(symbol, interval, days)
+  if df is None or df.empty:
+    st.error(
+        f"銘柄コード「{code}」のデータを取得できませんでした。取引時間外またはデータ未更新の可能性があります。"
+    )
+  else:
+    df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
+    df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
 
-    if df is None or df.empty:
-      st.error(
-          f"「{user_input}」の株価データを取得できませんでした。銘柄コード（4桁数字）または正確な銘柄名でお試しください。"
-      )
-    else:
-      df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
-      df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
+    latest_price = df["Close"].iloc[-1]
+    st.metric(
+        label=f"銘柄: {selected_stock} [{selected_tf}] (最新終値)",
+        value=f"{latest_price:,.1f} 円",
+    )
 
-      latest_price = df["Close"].iloc[-1]
-      st.metric(
-          label=f"銘柄: {display_label} [{selected_tf}] (最新終値)",
-          value=f"{latest_price:,.1f} 円",
-      )
+    fig = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.03,
+        row_heights=[0.7, 0.3],
+    )
 
-      fig = make_subplots(
-          rows=2,
-          cols=1,
-          shared_xaxes=True,
-          vertical_spacing=0.03,
-          row_heights=[0.7, 0.3],
-      )
+    fig.add_trace(
+        go.Candlestick(
+            x=df["DateStr"],
+            open=df["Open"],
+            high=df["High"],
+            low=df["Low"],
+            close=df["Close"],
+            name="株価",
+        ),
+        row=1,
+        col=1,
+    )
 
-      fig.add_trace(
-          go.Candlestick(
-              x=df["DateStr"],
-              open=df["Open"],
-              high=df["High"],
-              low=df["Low"],
-              close=df["Close"],
-              name="株価",
-          ),
-          row=1,
-          col=1,
-      )
+    fig.add_trace(
+        go.Scatter(
+            x=df["DateStr"],
+            y=df["SMA_S"],
+            mode="lines",
+            name=f"{sma_short}本線",
+            line=dict(color="orange", width=1.5),
+        ),
+        row=1,
+        col=1,
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=df["DateStr"],
+            y=df["SMA_L"],
+            mode="lines",
+            name=f"{sma_long}本線",
+            line=dict(color="#00BFFF", width=1.5),
+        ),
+        row=1,
+        col=1,
+    )
 
-      fig.add_trace(
-          go.Scatter(
-              x=df["DateStr"],
-              y=df["SMA_S"],
-              mode="lines",
-              name=f"{sma_short}本線",
-              line=dict(color="orange", width=1.5),
-          ),
-          row=1,
-          col=1,
-      )
-      fig.add_trace(
-          go.Scatter(
-              x=df["DateStr"],
-              y=df["SMA_L"],
-              mode="lines",
-              name=f"{sma_long}本線",
-              line=dict(color="#00BFFF", width=1.5),
-          ),
-          row=1,
-          col=1,
-      )
+    fig.add_trace(
+        go.Bar(
+            x=df["DateStr"], y=df["Volume"], name="出来高", marker_color="gray"
+        ),
+        row=2,
+        col=1,
+    )
 
-      fig.add_trace(
-          go.Bar(
-              x=df["DateStr"],
-              y=df["Volume"],
-              name="出来高",
-              marker_color="gray",
-          ),
-          row=2,
-          col=1,
-      )
+    fig.update_layout(
+        template="plotly_dark",
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=500,
+        showlegend=False,
+    )
 
-      fig.update_layout(
-          template="plotly_dark",
-          xaxis_rangeslider_visible=False,
-          margin=dict(l=10, r=10, t=10, b=10),
-          height=500,
-          showlegend=False,
-      )
+    fig.update_xaxes(type="category")
 
-      fig.update_xaxes(type="category")
-
-      st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
