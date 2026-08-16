@@ -531,12 +531,20 @@ if code:
         row=2,
         col=1,
     )
+
+    # 初期表示範囲を直近60本に設定（左右スクロール・移動を可能に）
+    total_len = len(df)
+    display_count = min(60, total_len)
+    start_idx = total_len - display_count
+    end_idx = total_len - 1
+
     fig.update_layout(
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=10, b=10),
         height=500,
         showlegend=False,
+        dragmode="pan",  # マウスドラッグでの移動（パン操作）をデフォルトに設定
     )
-    fig.update_xaxes(type="category")
+    fig.update_xaxes(type="category", range=[start_idx, end_idx])
     st.plotly_chart(fig, use_container_width=True)
