@@ -68,7 +68,8 @@ def get_all_jpx_stocks():
     df["label"] = df["コード"] + " | " + df["銘柄名"] + " (" + df["市場"] + ")"
     options = df["label"].tolist()
     code_map = dict(zip(df["label"], df["コード"]))
-    return options, code_map
+    code_to_name = dict(zip(df["コード"], df["銘柄名"]))
+    return options, code_map, code_to_name
   except Exception:
     default_options = [
         "3407 | 旭化成 (プライム)",
@@ -79,10 +80,18 @@ def get_all_jpx_stocks():
         "6861 | キーエンス (プライム)",
     ]
     default_map = {opt: opt.split(" | ")[0] for opt in default_options}
-    return default_options, default_map
+    default_names = {
+        "3407": "旭化成",
+        "7203": "トヨタ自動車",
+        "9984": "ソフトバンクグループ",
+        "6758": "ソニーグループ",
+        "8306": "三菱UFJフィナンシャル・グループ",
+        "6861": "キーエンス",
+    }
+    return default_options, default_map, default_names
 
 
-stock_options, code_map = get_all_jpx_stocks()
+stock_options, code_map, code_to_name = get_all_jpx_stocks()
 
 TIMEFRAMES = {
     "1分足": ("1m", 1, 5, 25),
@@ -153,10 +162,11 @@ if is_holding:
   col_btn1, col_btn2 = st.sidebar.columns(2)
   with col_btn1:
     if st.sidebar.button("💾 設定を保存", key=f"btn_save_{code}"):
-      stock_name = (
+      stock_name = code_to_name.get(
+          code,
           selected_stock.split(" | ")[1]
           if " | " in selected_stock
-          else selected_stock
+          else selected_stock,
       )
       st.session_state["holdings"][code] = {
           "name": stock_name,
@@ -165,6 +175,7 @@ if is_holding:
       }
       save_holdings(st.session_state["holdings"])
       st.sidebar.success("保存しました！")
+      st.rerun()
   with col_btn2:
     if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
       del st.session_state["holdings"][code]
@@ -175,7 +186,6 @@ if is_holding:
 st.sidebar.markdown("---")
 st.sidebar.subheader("📂 バックアップ / 復元")
 
-# バックアップダウンロード機能
 json_str = json.dumps(
     st.session_state["holdings"], ensure_ascii=False, indent=2
 )
@@ -187,7 +197,6 @@ st.sidebar.download_button(
     use_container_width=True,
 )
 
-# 復元アップロード機能
 uploaded_file = st.sidebar.file_uploader(
     "📤 設定ファイルを読み込む", type=["json"]
 )
@@ -197,6 +206,7 @@ if uploaded_file is not None:
     st.session_state["holdings"] = imported_data
     save_holdings(imported_data)
     st.sidebar.success("設定を復元しました！")
+    st.rerun()
   except Exception as e:
     st.sidebar.error(f"読み込み失敗: {e}")
 
@@ -424,21 +434,121 @@ if code:
           ),
       )
 
-    # 保存済みの保有銘柄一覧
-    if st.session_state["holdings"]:
-      with st.expander("📁 保存中の保有銘柄リスト一覧", expanded=False):
-        list_data = []
+    # --- 保有銘柄の一括登録・編集（ポートフォリオ管理） ---
+    with st.expander(
+        "📁 保有銘柄リスト（一括登録・表形式編集）", expanded=False
+    ):
+      tab1, tab2 = st.tabs(["📝 表形式で一括編集", "📋 テキスト一括貼り付け"])
+
+      # タブ1: 表形式編集（st.data_editor）
+      with tab1:
+        st.write(
+            "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
+        )
+
+        editor_rows = []
         for h_code, h_info in st.session_state["holdings"].items():
-          list_data.append({
-              "銘柄コード": h_code,
-              "銘柄名": h_info.get("name", "---"),
-              "平均取得単価 (円)": f"{h_info.get('buy_price', 0):,.1f}",
-              "保有株数 (株)": f"{h_info.get('qty', 0):,}",
-              "投資原本 (円)": (
-                  f"{h_info.get('buy_price', 0) * h_info.get('qty', 0):,.0f}"
+          editor_rows.append({
+              "銘柄コード": str(h_code).zfill(4),
+              "銘柄名": h_info.get(
+                  "name", code_to_name.get(h_code, "不明銘柄")
               ),
+              "平均取得単価 (円)": float(h_info.get("buy_price", 0.0)),
+              "保有株数 (株)": int(h_info.get("qty", 0)),
           })
-        st.dataframe(pd.DataFrame(list_data), use_container_width=True)
+
+        if not editor_rows:
+          editor_df = pd.DataFrame(
+              columns=[
+                  "銘柄コード",
+                  "銘柄名",
+                  "平均取得単価 (円)",
+                  "保有株数 (株)",
+              ]
+          )
+        else:
+          editor_df = pd.DataFrame(editor_rows)
+
+        edited_df = st.data_editor(
+            editor_df,
+            num_rows="dynamic",
+            column_config={
+                "銘柄コード": st.column_config.TextColumn(
+                    "銘柄コード (4桁)", help="例: 3407", required=True
+                ),
+                "銘柄名": st.column_config.TextColumn(
+                    "銘柄名（自動補完）", disabled=True
+                ),
+                "平均取得単価 (円)": st.column_config.NumberColumn(
+                    "平均取得単価 (円)", min_value=0.0, step=10.0
+                ),
+                "保有株数 (株)": st.column_config.NumberColumn(
+                    "保有株数 (株)", min_value=0, step=100
+                ),
+            },
+            use_container_width=True,
+            key="holdings_data_editor",
+        )
+
+        if st.button("💾 表の内容で一括保存", key="btn_save_bulk_table"):
+          new_holdings = {}
+          for _, row in edited_df.iterrows():
+            c_str = str(row["銘柄コード"]).strip().zfill(4)
+            if c_str and c_str.isdigit() and len(c_str) == 4:
+              b_price = float(row.get("平均取得単価 (円)", 0) or 0.0)
+              h_q = int(row.get("保有株数 (株)", 0) or 0)
+              s_name = code_to_name.get(
+                  c_str, str(row.get("銘柄名") or "不明銘柄")
+              )
+              new_holdings[c_str] = {
+                  "name": s_name,
+                  "buy_price": b_price,
+                  "qty": h_q,
+              }
+          st.session_state["holdings"] = new_holdings
+          save_holdings(new_holdings)
+          st.success("保有銘柄リストを一括更新しました！")
+          st.rerun()
+
+      # タブ2: テキスト一括貼り付け
+      with tab2:
+        st.write(
+            "カンマ、スペース、またはタブ区切りで「銘柄コード, 平均取得単価,"
+            " 保有株数」を1行ずつ入力して一括登録できます。"
+        )
+        st.caption(
+            "【入力例】\n3407, 1050, 200\n7203, 2800, 100\n9984, 8500, 300"
+        )
+
+        bulk_text = st.text_area(
+            "貼り付けエリア",
+            height=150,
+            placeholder="3407, 1050, 200\n7203, 2800, 100",
+        )
+
+        if st.button("📥 テキストから一括取り込み", key="btn_import_text"):
+          if bulk_text.strip():
+            count = 0
+            lines = bulk_text.strip().split("\n")
+            for line in lines:
+              parts = re.split(r"[,,\s\t]+", line.strip())
+              if len(parts) >= 1 and parts[0].isdigit():
+                c_code = parts[0].zfill(4)
+                c_price = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+                c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                s_name = code_to_name.get(c_code, c_code)
+
+                st.session_state["holdings"][c_code] = {
+                    "name": s_name,
+                    "buy_price": c_price,
+                    "qty": c_qty,
+                }
+                count += 1
+            save_holdings(st.session_state["holdings"])
+            st.success(f"{count} 件の銘柄を一括追加・更新しました！")
+            st.rerun()
+          else:
+            st.warning("テキストが入力されていません。")
 
     day_high = meta.get("regularMarketDayHigh") or df["High"].max()
     day_low = meta.get("regularMarketDayLow") or df["Low"].min()
@@ -560,7 +670,7 @@ if code:
           col=1,
       )
 
-    # 初期表示範囲を直近60本に設定（左右スクロール・移動を可能に）
+    # 初期表示範囲を直近60本に設定
     total_len = len(df)
     display_count = min(60, total_len)
     start_idx = total_len - display_count
@@ -572,7 +682,7 @@ if code:
         margin=dict(l=10, r=10, t=10, b=10),
         height=500,
         showlegend=False,
-        dragmode="pan",  # マウスドラッグでの移動（パン操作）をデフォルトに設定
+        dragmode="pan",
     )
     fig.update_xaxes(type="category", range=[start_idx, end_idx])
     st.plotly_chart(fig, use_container_width=True)
