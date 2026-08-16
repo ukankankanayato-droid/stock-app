@@ -1,5 +1,7 @@
 import datetime
 import io
+import json
+import os
 import re
 import time
 from bs4 import BeautifulSoup
@@ -19,6 +21,31 @@ st.markdown(
     " 株価分析アプリ</h2>",
     unsafe_allow_html=True,
 )
+
+# --- 保有データのローカル保存機能 ---
+HOLDINGS_FILE = "holdings.json"
+
+
+def load_holdings():
+  if os.path.exists(HOLDINGS_FILE):
+    try:
+      with open(HOLDINGS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+    except Exception:
+      return {}
+  return {}
+
+
+def save_holdings(data):
+  try:
+    with open(HOLDINGS_FILE, "w", encoding="utf-8") as f:
+      json.dump(data, f, ensure_ascii=False, indent=2)
+  except Exception as e:
+    st.error(f"保存処理中にエラーが発生しました: {e}")
+
+
+if "holdings" not in st.session_state:
+  st.session_state["holdings"] = load_holdings()
 
 
 # JPX全銘柄取得
@@ -89,23 +116,92 @@ with col2:
 
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
-# サイドバー：保有データ入力
+# --- サイドバー：保有データ設定と保存管理 ---
 st.sidebar.header("💼 保有株の設定")
-is_holding = st.sidebar.checkbox("この銘柄を保有している", value=False)
+
+saved_item = st.session_state["holdings"].get(code, {})
+is_saved = code in st.session_state["holdings"]
+
+is_holding = st.sidebar.checkbox(
+    "この銘柄を保有している",
+    value=is_saved,
+    key=f"is_holding_{code}",
+)
 
 buy_price = 0.0
 holding_qty = 0
 
 if is_holding:
+  default_price = float(saved_item.get("buy_price", 1000.0))
+  default_qty = int(saved_item.get("qty", 100))
+
   buy_price = st.sidebar.number_input(
-      "取得単価（購入株価 / 円）", min_value=0.0, value=1000.0, step=10.0
+      "取得単価（購入株価 / 円）",
+      min_value=0.0,
+      value=default_price,
+      step=10.0,
+      key=f"buy_price_{code}",
   )
   holding_qty = st.sidebar.number_input(
-      "保有株数（株）", min_value=0, value=100, step=100
+      "保有株数（株）",
+      min_value=0,
+      value=default_qty,
+      step=100,
+      key=f"holding_qty_{code}",
   )
 
+  col_btn1, col_btn2 = st.sidebar.columns(2)
+  with col_btn1:
+    if st.sidebar.button("💾 設定を保存", key=f"btn_save_{code}"):
+      stock_name = (
+          selected_stock.split(" | ")[1]
+          if " | " in selected_stock
+          else selected_stock
+      )
+      st.session_state["holdings"][code] = {
+          "name": stock_name,
+          "buy_price": buy_price,
+          "qty": holding_qty,
+      }
+      save_holdings(st.session_state["holdings"])
+      st.sidebar.success("保存しました！")
+  with col_btn2:
+    if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
+      del st.session_state["holdings"][code]
+      save_holdings(st.session_state["holdings"])
+      st.sidebar.info("保存を解除しました。")
+      st.rerun()
 
-# データ取得関数
+st.sidebar.markdown("---")
+st.sidebar.subheader("📂 バックアップ / 復元")
+
+# バックアップダウンロード機能
+json_str = json.dumps(
+    st.session_state["holdings"], ensure_ascii=False, indent=2
+)
+st.sidebar.download_button(
+    label="📥 ポートフォリオ設定を保存",
+    data=json_str,
+    file_name="my_portfolio.json",
+    mime="application/json",
+    use_container_width=True,
+)
+
+# 復元アップロード機能
+uploaded_file = st.sidebar.file_uploader(
+    "📤 設定ファイルを読み込む", type=["json"]
+)
+if uploaded_file is not None:
+  try:
+    imported_data = json.load(uploaded_file)
+    st.session_state["holdings"] = imported_data
+    save_holdings(imported_data)
+    st.sidebar.success("設定を復元しました！")
+  except Exception as e:
+    st.sidebar.error(f"読み込み失敗: {e}")
+
+
+# --- 株価データ取得関数 ---
 def fetch_stock_data_and_meta(symbol_code, interval, days):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
@@ -300,7 +396,6 @@ if code:
       price_diff_pct = (price_diff / buy_price) * 100
       total_profit = price_diff * holding_qty
 
-      # 配当利回りから取得価額利回りを算出
       raw_div_str = extra_info.get("配当利回り", "---").replace("%", "").strip()
       try:
         current_div_yield = float(raw_div_str)
@@ -328,6 +423,22 @@ if code:
               "現在の配当利回りと取得単価から算出した、購入価格に対する年間配当利回りです"
           ),
       )
+
+    # 保存済みの保有銘柄一覧
+    if st.session_state["holdings"]:
+      with st.expander("📁 保存中の保有銘柄リスト一覧", expanded=False):
+        list_data = []
+        for h_code, h_info in st.session_state["holdings"].items():
+          list_data.append({
+              "銘柄コード": h_code,
+              "銘柄名": h_info.get("name", "---"),
+              "取得単価 (円)": f"{h_info.get('buy_price', 0):,.1f}",
+              "保有株数 (株)": f"{h_info.get('qty', 0):,}",
+              "投資原本 (円)": (
+                  f"{h_info.get('buy_price', 0) * h_info.get('qty', 0):,.0f}"
+              ),
+          })
+        st.dataframe(pd.DataFrame(list_data), use_container_width=True)
 
     day_high = meta.get("regularMarketDayHigh") or df["High"].max()
     day_low = meta.get("regularMarketDayLow") or df["Low"].min()
