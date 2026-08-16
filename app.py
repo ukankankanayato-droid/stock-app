@@ -14,7 +14,7 @@ st.set_page_config(
 st.title("📈 株価分析アプリ")
 
 
-# 日本取引所グループ(JPX)公式から全上場銘柄データ（約4,000銘柄）を取得してキャッシュ
+# 日本取引所グループ(JPX)公式から全上場銘柄データを取得
 @st.cache_data(ttl=86400)
 def get_all_jpx_stocks():
   url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
@@ -27,11 +27,9 @@ def get_all_jpx_stocks():
     res = requests.get(url, headers=headers, timeout=10)
     df = pd.read_excel(io.BytesIO(res.content))
 
-    # コードを4桁文字列に整形
     df["コード"] = df["コード"].astype(str).str.zfill(4)
     df = df[df["コード"].str.len() == 4]
 
-    # ドロップダウン検索用フォーマット (例: "3407 | 旭化成 (プライム)")
     df["label"] = (
         df["コード"]
         + " | "
@@ -44,7 +42,6 @@ def get_all_jpx_stocks():
     code_map = dict(zip(df["label"], df["コード"]))
     return options, code_map
   except Exception:
-    # ネットワークエラー等のフォールバックリスト
     default_options = [
         "3407 | 旭化成 (プライム)",
         "7203 | トヨタ自動車 (プライム)",
@@ -65,7 +62,6 @@ def get_all_jpx_stocks():
 
 stock_options, code_map = get_all_jpx_stocks()
 
-# 時間足マップ
 TIMEFRAMES = {
     "1分足": ("1m", 1, 5, 25),
     "2分足": ("2m", 2, 5, 25),
@@ -81,7 +77,6 @@ TIMEFRAMES = {
 col1, col2 = st.columns([2, 1])
 
 with col1:
-  # 初期選択位置（デフォルト: 旭化成）
   default_idx = 0
   for i, opt in enumerate(stock_options):
     if "3407" in opt:
@@ -98,11 +93,70 @@ with col1:
 with col2:
   selected_tf = st.selectbox(
       "足種（時間足）", list(TIMEFRAMES.keys()), index=6
-  )  # デフォルト: 日足
+  )
 
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
 
+# 市況詳細情報（PER、PBR、時価総額、配当、年初来高安など）を取得する関数
+@st.cache_data(ttl=300)
+def fetch_market_info(symbol_code):
+  ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
+  url = f"https://query2.finance.yahoo.com/v10/finance/quoteSummary/{ticker}?modules=summaryDetail,price,defaultKeyStatistics"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      )
+  }
+
+  info = {}
+  try:
+    res = requests.get(url, headers=headers, timeout=5)
+    if res.status_code == 200:
+      data = res.json()["quoteSummary"]["result"][0]
+      summary = data.get("summaryDetail", {})
+      price = data.get("price", {})
+      stats = data.get("defaultKeyStatistics", {})
+
+      info["前日終値"] = price.get("regularMarketPreviousClose", {}).get(
+          "raw"
+      )
+      info["始値"] = price.get("regularMarketOpen", {}).get("raw")
+      info["高値"] = price.get("regularMarketDayHigh", {}).get("raw")
+      info["安値"] = price.get("regularMarketDayLow", {}).get("raw")
+      info["出来高"] = price.get("regularMarketVolume", {}).get("raw")
+
+      mcap = price.get("marketCap", {}).get("raw")
+      info["時価総額"] = (
+          f"{mcap / 100000000:,.1f} 億円" if mcap else "---"
+      )
+
+      pe = summary.get("trailingPE", {}).get("raw")
+      info["PER"] = f"{pe:.2f} 倍" if pe else "---"
+
+      pbr = stats.get("priceToBook", {}).get("raw")
+      info["PBR"] = f"{pbr:.2f} 倍" if pbr else "---"
+
+      div_yield = summary.get("dividendYield", {}).get("raw")
+      div_rate = summary.get("dividendRate", {}).get("raw")
+      if div_yield:
+        info["配当利回り"] = f"{div_yield * 100:.2f} %"
+      elif div_rate:
+        info["配当利回り"] = f"{div_rate} 円"
+      else:
+        info["配当利回り"] = "---"
+
+      high_52 = summary.get("fiftyTwoWeekHigh", {}).get("raw")
+      low_52 = summary.get("fiftyTwoWeekLow", {}).get("raw")
+      info["年初来高値"] = f"{high_52:,.1f} 円" if high_52 else "---"
+      info["年初来安値"] = f"{low_52:,.1f} 円" if low_52 else "---"
+      info["単元株式"] = "100 株"
+  except Exception:
+    pass
+  return info
+
+
+# 株価チャートデータ取得関数
 def fetch_stock_data(symbol_code, interval, days):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
@@ -111,10 +165,8 @@ def fetch_stock_data(symbol_code, interval, days):
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       )
   }
-
   url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval={interval}"
 
   try:
@@ -168,20 +220,88 @@ def fetch_stock_data(symbol_code, interval, days):
 
 if code:
   df = fetch_stock_data(code, interval, days)
+  market_info = fetch_market_info(code)
 
   if df is None or df.empty:
-    st.error(
-        f"銘柄コード「{code}」のデータを取得できませんでした。取引時間外またはデータ未更新の可能性があります。"
-    )
+    st.error(f"銘柄コード「{code}」のデータを取得できませんでした。")
   else:
+    latest_price = df["Close"].iloc[-1]
+    prev_price = (
+        market_info.get("前日終値")
+        if market_info.get("前日終値")
+        else df["Close"].iloc[-2]
+    )
+    diff = latest_price - prev_price if prev_price else 0
+    diff_pct = (diff / prev_price * 100) if prev_price else 0
+
+    # 上部ヘッダー（株価・前日比）
+    st.metric(
+        label=f"銘柄: {selected_stock} [{selected_tf}]",
+        value=f"{latest_price:,.1f} 円",
+        delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
+    )
+
+    # 市況情報パネルを表示
+    with st.expander("📋 市況情報（PER / PBR / 時価総額 / 年初来高安 など）", expanded=True):
+      m1, m2, m3, m4, m5 = st.columns(5)
+      with m1:
+        st.write(
+            "**前日終値:**",
+            (
+                f"{market_info.get('前日終値'):,.1f} 円"
+                if market_info.get("前日終値")
+                else "---"
+            ),
+        )
+        st.write(
+            "**始値:**",
+            (
+                f"{market_info.get('始値'):,.1f} 円"
+                if market_info.get("始値")
+                else "---"
+            ),
+        )
+      with m2:
+        st.write(
+            "**高値:**",
+            (
+                f"{market_info.get('高値'):,.1f} 円"
+                if market_info.get("高値")
+                else "---"
+            ),
+        )
+        st.write(
+            "**安値:**",
+            (
+                f"{market_info.get('安値'):,.1f} 円"
+                if market_info.get("安値")
+                else "---"
+            ),
+        )
+      with m3:
+        st.write(
+            "**出来高:**",
+            (
+                f"{market_info.get('出来高'):,} 株"
+                if market_info.get("出来高")
+                else "---"
+            ),
+        )
+        st.write("**時価総額:**", market_info.get("時価総額", "---"))
+      with m4:
+        st.write("**PER:**", market_info.get("PER", "---"))
+        st.write("**PBR:**", market_info.get("PBR", "---"))
+      with m5:
+        st.write("**配当利回り:**", market_info.get("配当利回り", "---"))
+        st.write(
+            "**年初来高値/安値:**",
+            f"{market_info.get('年初来高値', '---')} /"
+            f" {market_info.get('年初来安値', '---')}",
+        )
+
+    # 2段チャート（ローソク足 ＋ 移動平均線 ＋ 出来高）
     df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
     df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
-
-    latest_price = df["Close"].iloc[-1]
-    st.metric(
-        label=f"銘柄: {selected_stock} [{selected_tf}] (最新終値)",
-        value=f"{latest_price:,.1f} 円",
-    )
 
     fig = make_subplots(
         rows=2,
