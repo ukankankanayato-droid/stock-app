@@ -21,7 +21,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# セッション状態の初期化（保有データの一元管理）
+# セッション状態の初期化
 if "holdings" not in st.session_state:
   st.session_state["holdings"] = {}
 
@@ -91,21 +91,29 @@ app_mode = st.sidebar.radio(
 )
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📈 チャート設定")
-show_rsi = st.sidebar.checkbox("RSI（14日）を表示", value=False)
-show_macd = st.sidebar.checkbox("MACDを表示", value=False)
+st.sidebar.subheader("📈 インジケーター・表示設定")
+show_bollinger = st.sidebar.checkbox(
+    "ボリンジャーバンド（20日 ±2σ）", value=False
+)
+show_rsi = st.sidebar.checkbox("RSI（14日）", value=False)
+show_macd = st.sidebar.checkbox("MACD", value=False)
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📂 端末間のデータ移行（バックアップ）")
-st.sidebar.caption(
-    "他のPCやスマホへデータを移す時は、以下の機能を使用してください。"
+st.sidebar.subheader("🕹️ チャート操作")
+enable_pan = st.sidebar.checkbox(
+    "🖐️ チャートの左右移動（パン操作）を有効化",
+    value=False,
+    help="チェックを入れるとマウスや指でチャートを左右に移動・ズームできます。通常時の誤作動を防ぐ場合はオフにしてください。",
 )
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📂 バックアップ / 復元")
 
 json_str = json.dumps(
     st.session_state["holdings"], ensure_ascii=False, indent=2
 )
 st.sidebar.download_button(
-    label="📥 ポートフォリオ設定を書き出す (JSON)",
+    label="📥 ポートフォリオ設定を書き出す",
     data=json_str,
     file_name="my_portfolio.json",
     mime="application/json",
@@ -316,7 +324,7 @@ def calculate_macd(series, short=12, long=26, signal=9):
 
 # === 画面切替 ===
 if app_mode == "📊 ポートフォリオ総合ダッシュボード":
-  st.subheader("📊 保有銘柄・トータル資産ダッシュボード")
+  st.subheader("📊 ポートフォリオ＆年間予想配当金ダッシュボード")
 
   holdings = st.session_state.get("holdings", {})
   if not holdings:
@@ -326,12 +334,14 @@ if app_mode == "📊 ポートフォリオ総合ダッシュボード":
   else:
     total_investment = 0.0
     total_current_value = 0.0
+    total_annual_div = 0.0
     summary_data = []
 
-    with st.spinner("保有銘柄の最新株価を取得中..."):
+    with st.spinner("保有銘柄の最新株価・配当情報を計算中..."):
       for h_code, h_info in holdings.items():
         qty = int(h_info.get("qty", 0))
         buy_p = float(h_info.get("buy_price", 0.0))
+        annual_div = float(h_info.get("annual_div", 0.0))
         name = h_info.get("name", h_code)
 
         df_curr, _ = fetch_stock_data_and_meta(h_code, "1d", 5)
@@ -345,6 +355,12 @@ if app_mode == "📊 ポートフォリオ総合ダッシュボード":
         diff = curr_val - invest
         diff_pct = (diff / invest * 100) if invest > 0 else 0.0
 
+        item_annual_div = annual_div * qty
+        total_annual_div += item_annual_div
+
+        yoc = (annual_div / buy_p * 100) if buy_p > 0 else 0.0
+        curr_yield = (annual_div / curr_price * 100) if curr_price > 0 else 0.0
+
         total_investment += invest
         total_current_value += curr_val
 
@@ -354,27 +370,68 @@ if app_mode == "📊 ポートフォリオ総合ダッシュボード":
             "保有株数": f"{qty:,} 株",
             "取得単価": f"{buy_p:,.1f} 円",
             "現在値": f"{curr_price:,.1f} 円",
-            "投資額": f"{invest:,.0f} 円",
             "評価額": f"{curr_val:,.0f} 円",
             "評価損益": f"{diff:+,.0f} 円 ({diff_pct:+.2f}%)",
+            "1株予想配当": f"{annual_div:,.1f} 円",
+            "年間受取配当": f"{item_annual_div:,.0f} 円",
+            "YOC (取得利回り)": f"{yoc:.2f} %",
         })
 
     total_diff = total_current_value - total_investment
     total_diff_pct = (
         (total_diff / total_investment * 100) if total_investment > 0 else 0.0
     )
+    avg_yoc = (
+        (total_annual_div / total_investment * 100)
+        if total_investment > 0
+        else 0.0
+    )
+    monthly_div = total_annual_div / 12.0
 
-    col_s1, col_s2, col_s3 = st.columns(3)
-    col_s1.metric("総投資額", f"{total_investment:,.0f} 円")
-    col_s2.metric("現在評価総額", f"{total_current_value:,.0f} 円")
-    col_s3.metric(
+    st.markdown("### 💰 資産・配当金サマリー")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("総投資額", f"{total_investment:,.0f} 円")
+    c2.metric("現在評価総額", f"{total_current_value:,.0f} 円")
+    c3.metric(
         "トータル評価損益",
         f"{total_diff:+,.0f} 円",
         delta=f"{total_diff_pct:+.2f}%",
     )
+    c4.metric(
+        "年間予想受取配当額",
+        f"{total_annual_div:,.0f} 円",
+        delta=f"月平均: {monthly_div:,.0f} 円 / YOC: {avg_yoc:.2f}%",
+    )
+
+    # 増配シミュレーター
+    with st.expander("🔮 将来の増配・受取配当シミュレーター", expanded=False):
+      sim_col1, sim_col2 = st.columns(2)
+      with sim_col1:
+        growth_rate = st.slider(
+            "想定年間増配率 (%)",
+            min_value=0.0,
+            max_value=15.0,
+            value=3.0,
+            step=0.5,
+        )
+      with sim_col2:
+        sim_years = st.slider(
+            "シミュレーション期間 (年)",
+            min_value=1,
+            max_value=20,
+            value=5,
+        )
+
+      future_div = total_annual_div * ((1 + (growth_rate / 100)) ** sim_years)
+      future_monthly = future_div / 12.0
+      st.write(
+          f"年 **{growth_rate}%** で増配が続いた場合、**{sim_years}年後** の年間配当予想は"
+          f" **約 {future_div:,.0f} 円 / 年** （月平均 **約 {future_monthly:,.0f}"
+          " 円**）になります。"
+      )
 
     st.markdown("---")
-    st.write("### 📋 保有銘柄一覧")
+    st.write("### 📋 保有銘柄・配当金一覧")
     st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
 
 else:
@@ -398,7 +455,7 @@ else:
 
   interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
-  # 保有株設定サイドバー（状態の二重保持を解消）
+  # 保有株設定サイドバー
   saved_item = st.session_state["holdings"].get(code, {})
   is_saved = code in st.session_state["holdings"]
 
@@ -410,10 +467,12 @@ else:
 
   buy_price = 0.0
   holding_qty = 0
+  annual_div = 0.0
 
   if is_holding:
     default_price = float(saved_item.get("buy_price", 1000.0))
     default_qty = int(saved_item.get("qty", 100))
+    default_div = float(saved_item.get("annual_div", 0.0))
 
     buy_price = st.sidebar.number_input(
         "平均取得単価（購入株価 / 円）",
@@ -429,6 +488,13 @@ else:
         step=100,
         key=f"holding_qty_{code}",
     )
+    annual_div = st.sidebar.number_input(
+        "1株あたりの年間予想配当（円）",
+        min_value=0.0,
+        value=default_div,
+        step=1.0,
+        key=f"annual_div_{code}",
+    )
 
     col_btn1, col_btn2 = st.sidebar.columns(2)
     with col_btn1:
@@ -443,6 +509,7 @@ else:
             "name": stock_name,
             "buy_price": buy_price,
             "qty": holding_qty,
+            "annual_div": annual_div,
         }
         st.sidebar.success("保存しました！")
         st.rerun()
@@ -473,47 +540,51 @@ else:
           delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
       )
 
-      # 保有株損益パネル
+      # 保有株損益・配当パネル
       if is_holding and buy_price > 0:
         price_diff = latest_price - buy_price
         price_diff_pct = (price_diff / buy_price) * 100
         total_profit = price_diff * holding_qty
 
-        raw_div_str = (
-            extra_info.get("配当利回り", "---").replace("%", "").strip()
-        )
-        try:
-          current_div_yield = float(raw_div_str)
-          yoc = current_div_yield * (latest_price / buy_price)
-          yoc_str = f"{yoc:.2f} %"
-        except ValueError:
-          yoc_str = "---"
+        # 自動計算配当初期設定の補助
+        if annual_div == 0.0 and extra_info.get("配当利回り") != "---":
+          try:
+            div_pct = float(
+                extra_info["配当利回り"].replace("%", "").strip()
+            )
+            est_div = latest_price * (div_pct / 100.0)
+            annual_div = round(est_div, 1)
+            st.session_state["holdings"][code]["annual_div"] = annual_div
+          except Exception:
+            pass
 
-        with st.expander("💰 保有株の損益・利回り状況", expanded=True):
+        item_annual_div = annual_div * holding_qty
+        yoc = (annual_div / buy_price * 100) if buy_price > 0 else 0.0
+
+        with st.expander("💰 保有株の損益・利回り・配当シミュレーション", expanded=True):
           p_col1, p_col2, p_col3, p_col4 = st.columns(4)
           p_col1.metric(
-              label="保有株数",
+              label="保有株数 / 取得単価",
               value=f"{holding_qty:,} 株",
-              delta=f"取得単価: {buy_price:,.1f}円",
+              delta=f"{buy_price:,.1f} 円",
               delta_color="off",
           )
           p_col2.metric(
-              label="1株あたりの株価差",
-              value=f"{price_diff:+.1f} 円",
+              label="評価損益",
+              value=f"{total_profit:+,.0f} 円",
               delta=f"{price_diff_pct:+.2f}%",
           )
           p_col3.metric(
-              label="総額の評価損益",
-              value=f"{total_profit:+,.0f} 円",
-              delta=f"投資額: {buy_price * holding_qty:,.0f}円",
+              label="1株あたり予想配当 / YOC",
+              value=f"{annual_div:,.1f} 円",
+              delta=f"取得利回り: {yoc:.2f}%",
               delta_color="off",
           )
           p_col4.metric(
-              label="取得株価の利回り（YOC）",
-              value=yoc_str,
-              help=(
-                  "現在の配当利回りと平均取得単価から算出した、購入価格に対する年間配当利回りです"
-              ),
+              label="この銘柄の年間受取配当額",
+              value=f"{item_annual_div:,.0f} 円",
+              delta=f"月平均: {item_annual_div / 12:,.0f} 円",
+              delta_color="off",
           )
 
       # 一括登録・表形式編集パネル
@@ -526,7 +597,7 @@ else:
 
         with tab1:
           st.write(
-              "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
+              "以下の表で直接銘柄の追加・各数値の編集・削除が行えます。「一括保存」を押して適用してください。"
           )
 
           editor_rows = []
@@ -538,6 +609,7 @@ else:
                 ),
                 "平均取得単価 (円)": float(h_info.get("buy_price", 0.0)),
                 "保有株数 (株)": int(h_info.get("qty", 0)),
+                "1株予想配当 (円)": float(h_info.get("annual_div", 0.0)),
             })
 
           if not editor_rows:
@@ -547,6 +619,7 @@ else:
                     "銘柄名",
                     "平均取得単価 (円)",
                     "保有株数 (株)",
+                    "1株予想配当 (円)",
                 ]
             )
           else:
@@ -557,16 +630,19 @@ else:
               num_rows="dynamic",
               column_config={
                   "銘柄コード": st.column_config.TextColumn(
-                      "銘柄コード (4桁/英数字)", help="例: 3407, 265A", required=True
+                      "銘柄コード (4桁/英数字)", required=True
                   ),
                   "銘柄名": st.column_config.TextColumn(
-                      "銘柄名（自動補完）", disabled=True
+                      "銘柄名", disabled=True
                   ),
                   "平均取得単価 (円)": st.column_config.NumberColumn(
                       "平均取得単価 (円)", min_value=0.0, step=10.0
                   ),
                   "保有株数 (株)": st.column_config.NumberColumn(
                       "保有株数 (株)", min_value=0, step=100
+                  ),
+                  "1株予想配当 (円)": st.column_config.NumberColumn(
+                      "1株予想配当 (円)", min_value=0.0, step=1.0
                   ),
               },
               use_container_width=True,
@@ -580,6 +656,7 @@ else:
               if c_str and len(c_str) == 4 and c_str.isalnum():
                 b_price = float(row.get("平均取得単価 (円)", 0) or 0.0)
                 h_q = int(row.get("保有株数 (株)", 0) or 0)
+                a_div = float(row.get("1株予想配当 (円)", 0) or 0.0)
                 s_name = code_to_name.get(
                     c_str, str(row.get("銘柄名") or c_str)
                 )
@@ -587,6 +664,7 @@ else:
                     "name": s_name,
                     "buy_price": b_price,
                     "qty": h_q,
+                    "annual_div": a_div,
                 }
             st.session_state["holdings"] = new_holdings
             st.success("保有銘柄リストを一括更新しました！")
@@ -594,14 +672,13 @@ else:
 
         with tab2:
           st.write(
-              "カンマ、スペース、またはタブ区切りで「銘柄コード, 平均取得単価,"
-              " 保有株数」を1行ずつ入力して一括登録できます。"
+              "「銘柄コード, 平均取得単価, 保有株数, 1株予想配当」の順にテキストで貼り付けて一括登録できます。"
           )
           bulk_text = st.text_area(
               "貼り付けエリア",
               height=150,
               placeholder=(
-                  "3407, 1050, 200\n265A, 1009, 100\n7203, 2800, 100"
+                  "3407, 1050, 200, 36\n265A, 1009, 100, 15\n7203, 2800, 100, 90"
               ),
           )
 
@@ -618,19 +695,20 @@ else:
                         float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
                     )
                     c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                    c_div = float(parts[3]) if len(parts) > 3 and parts[3] else 0.0
                     s_name = code_to_name.get(c_code, c_code)
 
                     st.session_state["holdings"][c_code] = {
                         "name": s_name,
                         "buy_price": c_price,
                         "qty": c_qty,
+                        "annual_div": c_div,
                     }
                     count += 1
               st.success(f"{count} 件の銘柄を一括追加・更新しました！")
               st.rerun()
-            else:
-              st.warning("テキストが入力されていません。")
 
+      # 市況情報表示
       day_high = meta.get("regularMarketDayHigh") or df["High"].max()
       day_low = meta.get("regularMarketDayLow") or df["Low"].min()
       day_vol = meta.get("regularMarketVolume") or df["Volume"].iloc[-1]
@@ -670,9 +748,15 @@ else:
               else "---",
           )
 
-      # チャート表示
+      # テクニカル指標の計算
       df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
       df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
+
+      if show_bollinger:
+        df["BB_Middle"] = df["Close"].rolling(window=20).mean()
+        df["BB_Std"] = df["Close"].rolling(window=20).std()
+        df["BB_Upper2"] = df["BB_Middle"] + (df["BB_Std"] * 2)
+        df["BB_Lower2"] = df["BB_Middle"] - (df["BB_Std"] * 2)
 
       rows = 2
       row_heights = [0.7, 0.3]
@@ -690,6 +774,33 @@ else:
           vertical_spacing=0.03,
           row_heights=row_heights,
       )
+
+      # ボリンジャーバンド描画（ロウソク足の背面）
+      if show_bollinger:
+        fig.add_trace(
+            go.Scatter(
+                x=df["DateStr"],
+                y=df["BB_Upper2"],
+                mode="lines",
+                name="+2σ",
+                line=dict(color="rgba(100, 200, 255, 0.4)", width=1),
+            ),
+            row=1,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["DateStr"],
+                y=df["BB_Lower2"],
+                mode="lines",
+                name="-2σ",
+                line=dict(color="rgba(100, 200, 255, 0.4)", width=1),
+                fill="tonexty",
+                fillcolor="rgba(100, 200, 255, 0.05)",
+            ),
+            row=1,
+            col=1,
+        )
 
       fig.add_trace(
           go.Candlestick(
@@ -824,13 +935,23 @@ else:
       start_idx = total_len - display_count
       end_idx = total_len - 1
 
+      # チャートパン（移動）動作の設定切替
+      drag_mode = "pan" if enable_pan else False
+
       fig.update_layout(
           template="plotly_dark",
           xaxis_rangeslider_visible=False,
           margin=dict(l=10, r=10, t=10, b=10),
           height=650 if (show_rsi or show_macd) else 500,
           showlegend=False,
-          dragmode="pan",
+          dragmode=drag_mode,
       )
       fig.update_xaxes(type="category", range=[start_idx, end_idx])
-      st.plotly_chart(fig, use_container_width=True)
+
+      plotly_config = {
+          "scrollZoom": enable_pan,
+          "displayModeBar": True,
+      }
+      st.plotly_chart(
+          fig, use_container_width=True, config=plotly_config
+      )
