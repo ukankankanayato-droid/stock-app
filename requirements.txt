@@ -4,3 +4,4 @@ plotly
 requests
 xlrd
 openpyxl
+beautifulsoup4
