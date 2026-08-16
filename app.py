@@ -10,10 +10,10 @@ import requests
 import streamlit as st
 
 st.set_page_config(
-    page_title="株価分析アプリ", layout="wide", initial_sidebar_state="collapsed"
+    page_title="株価分析アプリ", layout="wide", initial_sidebar_state="expanded"
 )
 
-# タイトルサイズを調整してスマホでも1行表示
+# タイトル
 st.markdown(
     "<h2 style='font-size: 22px; font-weight: bold; margin-bottom: 12px;'>📈"
     " 株価分析アプリ</h2>",
@@ -21,7 +21,7 @@ st.markdown(
 )
 
 
-# 日本取引所グループ(JPX)公式から全上場銘柄データを取得
+# JPX全銘柄取得
 @st.cache_data(ttl=86400)
 def get_all_jpx_stocks():
   url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
@@ -35,13 +35,10 @@ def get_all_jpx_stocks():
     df = pd.read_excel(io.BytesIO(res.content))
     df["コード"] = df["コード"].astype(str).str.zfill(4)
     df = df[df["コード"].str.len() == 4]
-
-    # 市場区分の（内国株式）等を削除して表示をすっきり化
     df["市場"] = (
         df["市場・商品区分"].astype(str).str.replace(r"（.*）", "", regex=True)
     )
     df["label"] = df["コード"] + " | " + df["銘柄名"] + " (" + df["市場"] + ")"
-
     options = df["label"].tolist()
     code_map = dict(zip(df["label"], df["コード"]))
     return options, code_map
@@ -72,8 +69,8 @@ TIMEFRAMES = {
     "月足": ("1mo", 1825, 12, 24),
 }
 
+# 銘柄選択
 col1, col2 = st.columns([2, 1])
-
 with col1:
   default_idx = 0
   for i, opt in enumerate(stock_options):
@@ -81,9 +78,7 @@ with col1:
       default_idx = i
       break
   selected_stock = st.selectbox(
-      "銘柄検索（コード・名称）",
-      options=stock_options,
-      index=default_idx,
+      "銘柄検索（コード・名称）", options=stock_options, index=default_idx
   )
   code = code_map.get(selected_stock, "3407")
 
@@ -94,24 +89,36 @@ with col2:
 
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
+# サイドバー：保有データ入力
+st.sidebar.header("💼 保有株の設定")
+is_holding = st.sidebar.checkbox("この銘柄を保有している", value=False)
 
-# チャートデータとmeta情報を取得
+buy_price = 0.0
+holding_qty = 0
+
+if is_holding:
+  buy_price = st.sidebar.number_input(
+      "取得単価（購入株価 / 円）", min_value=0.0, value=1000.0, step=10.0
+  )
+  holding_qty = st.sidebar.number_input(
+      "保有株数（株）", min_value=0, value=100, step=100
+  )
+
+
+# データ取得関数
 def fetch_stock_data_and_meta(symbol_code, interval, days):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
   start_ts = end_ts - (days * 86400)
-
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       )
   }
-
   urls = [
       f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval={interval}",
       f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval={interval}",
   ]
-
   data = None
   for url in urls:
     try:
@@ -134,12 +141,13 @@ def fetch_stock_data_and_meta(symbol_code, interval, days):
       else {}
   )
 
-  opens = quote.get("open", [])
-  highs = quote.get("high", [])
-  lows = quote.get("low", [])
-  closes = quote.get("close", [])
-  volumes = quote.get("volume", [])
-
+  opens, highs, lows, closes, volumes = (
+      quote.get("open", []),
+      quote.get("high", []),
+      quote.get("low", []),
+      quote.get("close", []),
+      quote.get("volume", []),
+  )
   if not timestamps or not closes:
     return None, meta
 
@@ -161,121 +169,96 @@ def fetch_stock_data_and_meta(symbol_code, interval, days):
           "Close": c,
           "Volume": v if v is not None else 0,
       })
-
-  df = pd.DataFrame(records)
-  return df, meta
+  return pd.DataFrame(records), meta
 
 
-# 株探からの指標取得関数
 def get_from_kabutan(code):
   url = f"https://kabutan.jp/stock/?code={code}"
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      ),
-      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      )
   }
   res = requests.get(url, headers=headers, timeout=5)
   if res.status_code != 200:
     return None
   soup = BeautifulSoup(res.text, "html.parser")
-  info = {}
   text = soup.get_text()
-
+  info = {}
   m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
   if m_per:
     info["PER"] = f"{m_per.group(1)} 倍"
-
   m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
   if m_pbr:
     info["PBR"] = f"{m_pbr.group(1)} 倍"
-
   m_div = re.search(r"利回り[^\d]*([\d\.]+)\s*%", text)
   if m_div:
     info["配当利回り"] = f"{m_div.group(1)} %"
-
   m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(億円|百万円)", text)
   if m_cap:
     info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
-
   return info
 
 
-# みんかぶからの指標取得関数
 def get_from_minkabu(code):
   url = f"https://minkabu.jp/stock/{code}"
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      ),
-      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      )
   }
   res = requests.get(url, headers=headers, timeout=5)
   if res.status_code != 200:
     return None
   soup = BeautifulSoup(res.text, "html.parser")
-  info = {}
   text = soup.get_text()
-
+  info = {}
   m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
   if m_per:
     info["PER"] = f"{m_per.group(1)} 倍"
-
   m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
   if m_pbr:
     info["PBR"] = f"{m_pbr.group(1)} 倍"
-
   m_div = re.search(r"(?:予想)?配当利回り[^\d]*([\d\.]+)\s*%", text)
   if m_div:
     info["配当利回り"] = f"{m_div.group(1)} %"
-
   m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(百万円|億円|兆円)", text)
   if m_cap:
     info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
-
   return info
 
 
-# Yahoo!ファイナンス JPからの指標取得関数
 def get_from_yahoo_jp(code):
   url = f"https://finance.yahoo.co.jp/quote/{code}.T"
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      ),
-      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+      )
   }
   res = requests.get(url, headers=headers, timeout=5)
   if res.status_code != 200:
     return None
   soup = BeautifulSoup(res.text, "html.parser")
-  info = {}
   text = soup.get_text()
-
+  info = {}
   m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
   if m_per:
     info["PER"] = f"{m_per.group(1)} 倍"
-
   m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
   if m_pbr:
     info["PBR"] = f"{m_pbr.group(1)} 倍"
-
   m_div = re.search(r"配当利回り[^\d]*([\d\.]+)\s*%", text)
   if m_div:
     info["配当利回り"] = f"{m_div.group(1)} %"
-
   m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(百万円|億円|兆円)", text)
   if m_cap:
     info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
-
   return info
 
 
-# 複数ソースから指標を自動補完するメイン処理
 @st.cache_data(ttl=300)
 def fetch_extra_quote_info(symbol_code):
   info = {"PER": "---", "PBR": "---", "時価総額": "---", "配当利回り": "---"}
-
   for fetch_func in [get_from_kabutan, get_from_minkabu, get_from_yahoo_jp]:
     try:
       data = fetch_func(symbol_code)
@@ -285,10 +268,8 @@ def fetch_extra_quote_info(symbol_code):
             info[k] = v
     except Exception:
       pass
-
     if not any(v == "---" for v in info.values()):
       break
-
   return info
 
 
@@ -313,13 +294,47 @@ if code:
         delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
     )
 
+    # 保有株計算処理
+    if is_holding and buy_price > 0:
+      price_diff = latest_price - buy_price
+      price_diff_pct = (price_diff / buy_price) * 100
+      total_profit = price_diff * holding_qty
+
+      # 配当利回りから取得価額利回りを算出
+      raw_div_str = extra_info.get("配当利回り", "---").replace("%", "").strip()
+      try:
+        current_div_yield = float(raw_div_str)
+        yoc = current_div_yield * (latest_price / buy_price)
+        yoc_str = f"{yoc:.2f} %"
+      except ValueError:
+        yoc_str = "---"
+
+      st.subheader("💰 保有株の損益・利回り状況")
+      p_col1, p_col2, p_col3 = st.columns(3)
+      p_col1.metric(
+          label="1株あたりの株価差",
+          value=f"{price_diff:+.1f} 円",
+          delta=f"{price_diff_pct:+.2f}%",
+      )
+      p_col2.metric(
+          label="総額の評価損益",
+          value=f"{total_profit:+,.0f} 円",
+          delta=f"{holding_qty:,} 株保有",
+      )
+      p_col3.metric(
+          label="取得株価の利回り（YOC）",
+          value=yoc_str,
+          help=(
+              "現在の配当利回りと取得単価から算出した、購入価格に対する年間配当利回りです"
+          ),
+      )
+
     day_high = meta.get("regularMarketDayHigh") or df["High"].max()
     day_low = meta.get("regularMarketDayLow") or df["Low"].min()
     day_vol = meta.get("regularMarketVolume") or df["Volume"].iloc[-1]
     high_52 = meta.get("fiftyTwoWeekHigh")
     low_52 = meta.get("fiftyTwoWeekLow")
 
-    # 市況情報パネル
     with st.expander(
         "📋 市況情報（PER / PBR / 時価総額 / 年初来高安 など）", expanded=True
     ):
@@ -353,7 +368,7 @@ if code:
             else "---",
         )
 
-    # 2段チャート（ローソク足 ＋ 出来高）
+    # チャート表示
     df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
     df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
 
@@ -364,7 +379,6 @@ if code:
         vertical_spacing=0.03,
         row_heights=[0.7, 0.3],
     )
-
     fig.add_trace(
         go.Candlestick(
             x=df["DateStr"],
@@ -377,7 +391,6 @@ if code:
         row=1,
         col=1,
     )
-
     fig.add_trace(
         go.Scatter(
             x=df["DateStr"],
@@ -400,7 +413,6 @@ if code:
         row=1,
         col=1,
     )
-
     fig.add_trace(
         go.Bar(
             x=df["DateStr"], y=df["Volume"], name="出来高", marker_color="gray"
@@ -408,7 +420,6 @@ if code:
         row=2,
         col=1,
     )
-
     fig.update_layout(
         template="plotly_dark",
         xaxis_rangeslider_visible=False,
@@ -416,7 +427,5 @@ if code:
         height=500,
         showlegend=False,
     )
-
     fig.update_xaxes(type="category")
-
     st.plotly_chart(fig, use_container_width=True)
