@@ -1,6 +1,7 @@
 import datetime
 import io
 import json
+import re
 import time
 from bs4 import BeautifulSoup
 import pandas as pd
@@ -20,9 +21,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# --- ブラウザ保存（localStorage）連携用のコンポーネント ---
-# ブラウザ側に保存されたデータを受け取るため、streamlit-javascript等がない環境でも
-# 安全に動くようセッション状態とファイル入出力をハイブリッドで活用します。
+# セッション状態の初期化
 if "holdings" not in st.session_state:
   st.session_state["holdings"] = {}
 
@@ -84,86 +83,18 @@ TIMEFRAMES = {
     "月足": ("1mo", 1825, 12, 24),
 }
 
-# 銘柄選択
-col1, col2 = st.columns([2, 1])
-with col1:
-  default_idx = 0
-  for i, opt in enumerate(stock_options):
-    if "3407" in opt:
-      default_idx = i
-      break
-  selected_stock = st.selectbox(
-      "銘柄検索（コード・名称）", options=stock_options, index=default_idx
-  )
-  code = code_map.get(selected_stock, "3407")
+# --- サイドバー表示設定 ---
+st.sidebar.header("💼 設定・ナビゲーション")
 
-with col2:
-  selected_tf = st.selectbox(
-      "足種（時間足）", list(TIMEFRAMES.keys()), index=6
-  )
-
-interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
-
-# --- サイドバー：保有データ設定とバックアップ管理 ---
-st.sidebar.header("💼 保有株の設定")
-
-saved_item = st.session_state["holdings"].get(code, {})
-is_saved = code in st.session_state["holdings"]
-
-if is_saved and f"is_holding_{code}" not in st.session_state:
-  st.session_state[f"is_holding_{code}"] = True
-
-is_holding = st.sidebar.checkbox(
-    "この銘柄を保有している",
-    value=is_saved,
-    key=f"is_holding_{code}",
+# モード切替
+app_mode = st.sidebar.radio(
+    "表示モード", ["📈 個別銘柄チャート・分析", "📊 ポートフォリオ総合ダッシュボード"]
 )
 
-buy_price = 0.0
-holding_qty = 0
-
-if is_holding:
-  default_price = float(saved_item.get("buy_price", 1000.0))
-  default_qty = int(saved_item.get("qty", 100))
-
-  buy_price = st.sidebar.number_input(
-      "平均取得単価（購入株価 / 円）",
-      min_value=0.0,
-      value=default_price,
-      step=10.0,
-      key=f"buy_price_{code}",
-  )
-  holding_qty = st.sidebar.number_input(
-      "保有株数（株）",
-      min_value=0,
-      value=default_qty,
-      step=100,
-      key=f"holding_qty_{code}",
-  )
-
-  col_btn1, col_btn2 = st.sidebar.columns(2)
-  with col_btn1:
-    if st.sidebar.button("💾 設定を保存", key=f"btn_save_{code}"):
-      stock_name = code_to_name.get(
-          code,
-          selected_stock.split(" | ")[1]
-          if " | " in selected_stock
-          else selected_stock,
-      )
-      st.session_state["holdings"][code] = {
-          "name": stock_name,
-          "buy_price": buy_price,
-          "qty": holding_qty,
-      }
-      st.session_state[f"is_holding_{code}"] = True
-      st.sidebar.success("保存しました！")
-      st.rerun()
-  with col_btn2:
-    if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
-      del st.session_state["holdings"][code]
-      st.session_state[f"is_holding_{code}"] = False
-      st.sidebar.info("保存を解除しました。")
-      st.rerun()
+st.sidebar.markdown("---")
+st.sidebar.subheader("📈 チャート設定")
+show_rsi = st.sidebar.checkbox("RSI（14日）を表示", value=False)
+show_macd = st.sidebar.checkbox("MACDを表示", value=False)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📂 端末間のデータ移行（バックアップ）")
@@ -197,7 +128,7 @@ if uploaded_file is not None:
     st.sidebar.error(f"読み込み失敗: {e}")
 
 
-# --- 株価データ取得関数 ---
+# --- データ取得関数 ---
 def fetch_stock_data_and_meta(symbol_code, interval, days):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
@@ -365,308 +296,548 @@ def fetch_extra_quote_info(symbol_code):
   return info
 
 
-if code:
-  df, meta = fetch_stock_data_and_meta(code, interval, days)
-  extra_info = fetch_extra_quote_info(code)
+# テクニカル指標計算
+def calculate_rsi(series, period=14):
+  delta = series.diff()
+  gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+  loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+  rs = gain / loss
+  return 100 - (100 / (1 + rs))
 
-  if df is None or df.empty:
-    st.error(f"銘柄コード「{code}」のデータを取得できませんでした。")
+
+def calculate_macd(series, short=12, long=26, signal=9):
+  ema_short = series.ewm(span=short, adjust=False).mean()
+  ema_long = series.ewm(span=long, adjust=False).mean()
+  macd = ema_short - ema_long
+  macd_signal = macd.ewm(span=signal, adjust=False).mean()
+  macd_hist = macd - macd_signal
+  return macd, macd_signal, macd_hist
+
+
+# === 画面制御 ===
+if app_mode == "📊 ポートフォリオ総合ダッシュボード":
+  st.subheader("📊 保有銘柄・トータル資産ダッシュボード")
+
+  holdings = st.session_state.get("holdings", {})
+  if not holdings:
+    st.info(
+        "現在保有銘柄が登録されていません。個別銘柄画面から保有株の設定を行ってください。"
+    )
   else:
-    latest_price = df["Close"].iloc[-1]
-    prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
-    if not prev_close and len(df) > 1:
-      prev_close = df["Close"].iloc[-2]
+    total_investment = 0.0
+    total_current_value = 0.0
+    summary_data = []
 
-    diff = latest_price - prev_close if prev_close else 0
-    diff_pct = (diff / prev_close * 100) if prev_close else 0
+    with st.spinner("保有銘柄の最新株価を取得中..."):
+      for h_code, h_info in holdings.items():
+        qty = int(h_info.get("qty", 0))
+        buy_p = float(h_info.get("buy_price", 0.0))
+        name = h_info.get("name", h_code)
 
-    st.metric(
-        label=f"銘柄: {selected_stock} [{selected_tf}]",
-        value=f"{latest_price:,.1f} 円",
-        delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
-    )
-
-    # 保有株計算処理（折りたたみパネル）
-    if is_holding and buy_price > 0:
-      price_diff = latest_price - buy_price
-      price_diff_pct = (price_diff / buy_price) * 100
-      total_profit = price_diff * holding_qty
-
-      raw_div_str = extra_info.get("配当利回り", "---").replace("%", "").strip()
-      try:
-        current_div_yield = float(raw_div_str)
-        yoc = current_div_yield * (latest_price / buy_price)
-        yoc_str = f"{yoc:.2f} %"
-      except ValueError:
-        yoc_str = "---"
-
-      with st.expander("💰 保有株の損益・利回り状況", expanded=True):
-        p_col1, p_col2, p_col3, p_col4 = st.columns(4)
-        p_col1.metric(
-            label="保有株数",
-            value=f"{holding_qty:,} 株",
-            delta=f"取得単価: {buy_price:,.1f}円",
-            delta_color="off",
-        )
-        p_col2.metric(
-            label="1株あたりの株価差",
-            value=f"{price_diff:+.1f} 円",
-            delta=f"{price_diff_pct:+.2f}%",
-        )
-        p_col3.metric(
-            label="総額の評価損益",
-            value=f"{total_profit:+,.0f} 円",
-            delta=f"投資額: {buy_price * holding_qty:,.0f}円",
-            delta_color="off",
-        )
-        p_col4.metric(
-            label="取得株価の利回り（YOC）",
-            value=yoc_str,
-            help=(
-                "現在の配当利回りと平均取得単価から算出した、購入価格に対する年間配当利回りです"
-            ),
-        )
-
-    # 保有銘柄リスト（一括登録・表形式編集）
-    with st.expander(
-        "📁 保有銘柄リスト（一括登録・表形式編集）", expanded=False
-    ):
-      tab1, tab2 = st.tabs(["📝 表形式で一括編集", "📋 テキスト一括貼り付け"])
-
-      with tab1:
-        st.write(
-            "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
-        )
-
-        editor_rows = []
-        for h_code, h_info in st.session_state["holdings"].items():
-          editor_rows.append({
-              "銘柄コード": str(h_code).zfill(4),
-              "銘柄名": h_info.get(
-                  "name", code_to_name.get(h_code, "不明銘柄")
-              ),
-              "平均取得単価 (円)": float(h_info.get("buy_price", 0.0)),
-              "保有株数 (株)": int(h_info.get("qty", 0)),
-          })
-
-        if not editor_rows:
-          editor_df = pd.DataFrame(
-              columns=[
-                  "銘柄コード",
-                  "銘柄名",
-                  "平均取得単価 (円)",
-                  "保有株数 (株)",
-              ]
-          )
+        df_curr, _ = fetch_stock_data_and_meta(h_code, "1d", 5)
+        if df_curr is not None and not df_curr.empty:
+          curr_price = float(df_curr["Close"].iloc[-1])
         else:
-          editor_df = pd.DataFrame(editor_rows)
+          curr_price = buy_p
 
-        edited_df = st.data_editor(
-            editor_df,
-            num_rows="dynamic",
-            column_config={
-                "銘柄コード": st.column_config.TextColumn(
-                    "銘柄コード (4桁)", help="例: 3407", required=True
-                ),
-                "銘柄名": st.column_config.TextColumn(
-                    "銘柄名（自動補完）", disabled=True
-                ),
-                "平均取得単価 (円)": st.column_config.NumberColumn(
-                    "平均取得単価 (円)", min_value=0.0, step=10.0
-                ),
-                "保有株数 (株)": st.column_config.NumberColumn(
-                    "保有株数 (株)", min_value=0, step=100
-                ),
-            },
-            use_container_width=True,
-            key="holdings_data_editor",
+        invest = buy_p * qty
+        curr_val = curr_price * qty
+        diff = curr_val - invest
+        diff_pct = (diff / invest * 100) if invest > 0 else 0.0
+
+        total_investment += invest
+        total_current_value += curr_val
+
+        summary_data.append({
+            "コード": h_code,
+            "銘柄名": name,
+            "保有株数": f"{qty:,} 株",
+            "取得単価": f"{buy_p:,.1f} 円",
+            "現在値": f"{curr_price:,.1f} 円",
+            "投資額": f"{invest:,.0f} 円",
+            "評価額": f"{curr_val:,.0f} 円",
+            "評価損益": f"{diff:+,.0f} 円 ({diff_pct:+.2f}%)",
+        })
+
+    total_diff = total_current_value - total_investment
+    total_diff_pct = (
+        (total_diff / total_investment * 100) if total_investment > 0 else 0.0
+    )
+
+    col_s1, col_s2, col_s3 = st.columns(3)
+    col_s1.metric("総投資額", f"{total_investment:,.0f} 円")
+    col_s2.metric("現在評価総額", f"{total_current_value:,.0f} 円")
+    col_s3.metric(
+        "トータル評価損益",
+        f"{total_diff:+,.0f} 円",
+        delta=f"{total_diff_pct:+.2f}%",
+    )
+
+    st.markdown("---")
+    st.write("### 📋 保有銘柄一覧")
+    st.dataframe(pd.DataFrame(summary_data), use_container_width=True)
+
+else:
+  # 個別銘柄選択画面
+  col1, col2 = st.columns([2, 1])
+  with col1:
+    default_idx = 0
+    for i, opt in enumerate(stock_options):
+      if "3407" in opt:
+        default_idx = i
+        break
+    selected_stock = st.selectbox(
+        "銘柄検索（コード・名称）", options=stock_options, index=default_idx
+    )
+    code = code_map.get(selected_stock, "3407")
+
+  with col2:
+    selected_tf = st.selectbox(
+        "足種（時間足）", list(TIMEFRAMES.keys()), index=6
+    )
+
+  interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
+
+  # 保有株設定サイドバー
+  saved_item = st.session_state["holdings"].get(code, {})
+  is_saved = code in st.session_state["holdings"]
+
+  if is_saved and f"is_holding_{code}" not in st.session_state:
+    st.session_state[f"is_holding_{code}"] = True
+
+  is_holding = st.sidebar.checkbox(
+      "この銘柄を保有している",
+      value=is_saved,
+      key=f"is_holding_{code}",
+  )
+
+  buy_price = 0.0
+  holding_qty = 0
+
+  if is_holding:
+    default_price = float(saved_item.get("buy_price", 1000.0))
+    default_qty = int(saved_item.get("qty", 100))
+
+    buy_price = st.sidebar.number_input(
+        "平均取得単価（購入株価 / 円）",
+        min_value=0.0,
+        value=default_price,
+        step=10.0,
+        key=f"buy_price_{code}",
+    )
+    holding_qty = st.sidebar.number_input(
+        "保有株数（株）",
+        min_value=0,
+        value=default_qty,
+        step=100,
+        key=f"holding_qty_{code}",
+    )
+
+    col_btn1, col_btn2 = st.sidebar.columns(2)
+    with col_btn1:
+      if st.sidebar.button("💾 設定を保存", key=f"btn_save_{code}"):
+        stock_name = code_to_name.get(
+            code,
+            selected_stock.split(" | ")[1]
+            if " | " in selected_stock
+            else selected_stock,
+        )
+        st.session_state["holdings"][code] = {
+            "name": stock_name,
+            "buy_price": buy_price,
+            "qty": holding_qty,
+        }
+        st.session_state[f"is_holding_{code}"] = True
+        st.sidebar.success("保存しました！")
+        st.rerun()
+    with col_btn2:
+      if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
+        del st.session_state["holdings"][code]
+        st.session_state[f"is_holding_{code}"] = False
+        st.sidebar.info("保存を解除しました。")
+        st.rerun()
+
+  if code:
+    df, meta = fetch_stock_data_and_meta(code, interval, days)
+    extra_info = fetch_extra_quote_info(code)
+
+    if df is None or df.empty:
+      st.error(f"銘柄コード「{code}」のデータを取得できませんでした。")
+    else:
+      latest_price = df["Close"].iloc[-1]
+      prev_close = meta.get("chartPreviousClose") or meta.get("previousClose")
+      if not prev_close and len(df) > 1:
+        prev_close = df["Close"].iloc[-2]
+
+      diff = latest_price - prev_close if prev_close else 0
+      diff_pct = (diff / prev_close * 100) if prev_close else 0
+
+      st.metric(
+          label=f"銘柄: {selected_stock} [{selected_tf}]",
+          value=f"{latest_price:,.1f} 円",
+          delta=f"{diff:+.1f} 円 ({diff_pct:+.2f}%)",
+      )
+
+      # 保有株損益パネル
+      if is_holding and buy_price > 0:
+        price_diff = latest_price - buy_price
+        price_diff_pct = (price_diff / buy_price) * 100
+        total_profit = price_diff * holding_qty
+
+        raw_div_str = (
+            extra_info.get("配当利回り", "---").replace("%", "").strip()
+        )
+        try:
+          current_div_yield = float(raw_div_str)
+          yoc = current_div_yield * (latest_price / buy_price)
+          yoc_str = f"{yoc:.2f} %"
+        except ValueError:
+          yoc_str = "---"
+
+        with st.expander("💰 保有株の損益・利回り状況", expanded=True):
+          p_col1, p_col2, p_col3, p_col4 = st.columns(4)
+          p_col1.metric(
+              label="保有株数",
+              value=f"{holding_qty:,} 株",
+              delta=f"取得単価: {buy_price:,.1f}円",
+              delta_color="off",
+          )
+          p_col2.metric(
+              label="1株あたりの株価差",
+              value=f"{price_diff:+.1f} 円",
+              delta=f"{price_diff_pct:+.2f}%",
+          )
+          p_col3.metric(
+              label="総額の評価損益",
+              value=f"{total_profit:+,.0f} 円",
+              delta=f"投資額: {buy_price * holding_qty:,.0f}円",
+              delta_color="off",
+          )
+          p_col4.metric(
+              label="取得株価の利回り（YOC）",
+              value=yoc_str,
+              help=(
+                  "現在の配当利回りと平均取得単価から算出した、購入価格に対する年間配当利回りです"
+              ),
+          )
+
+      # 保有銘柄リスト（一括登録・表形式編集）
+      with st.expander(
+          "📁 保有銘柄リスト（一括登録・表形式編集）", expanded=False
+      ):
+        tab1, tab2 = st.tabs(
+            ["📝 表形式で一括編集", "📋 テキスト一括貼り付け"]
         )
 
-        if st.button("💾 表の内容で一括保存", key="btn_save_bulk_table"):
-          new_holdings = {}
-          for _, row in edited_df.iterrows():
-            c_str = str(row["銘柄コード"]).strip().zfill(4)
-            if c_str and c_str.isdigit() and len(c_str) == 4:
-              b_price = float(row.get("平均取得単価 (円)", 0) or 0.0)
-              h_q = int(row.get("保有株数 (株)", 0) or 0)
-              s_name = code_to_name.get(
-                  c_str, str(row.get("銘柄名") or "不明銘柄")
-              )
-              new_holdings[c_str] = {
-                  "name": s_name,
-                  "buy_price": b_price,
-                  "qty": h_q,
-              }
-              st.session_state[f"is_holding_{c_str}"] = True
-          st.session_state["holdings"] = new_holdings
-          st.success("保有銘柄リストを一括更新しました！")
-          st.rerun()
+        with tab1:
+          st.write(
+              "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
+          )
 
-      with tab2:
-        st.write(
-            "カンマ、スペース、またはタブ区切りで「銘柄コード, 平均取得単価,"
-            " 保有株数」を1行ずつ入力して一括登録できます。"
-        )
-        bulk_text = st.text_area(
-            "貼り付けエリア",
-            height=150,
-            placeholder="3407, 1050, 200\n7203, 2800, 100",
-        )
+          editor_rows = []
+          for h_code, h_info in st.session_state["holdings"].items():
+            editor_rows.append({
+                "銘柄コード": str(h_code).zfill(4),
+                "銘柄名": h_info.get(
+                    "name", code_to_name.get(h_code, "不明銘柄")
+                ),
+                "平均取得単価 (円)": float(h_info.get("buy_price", 0.0)),
+                "保有株数 (株)": int(h_info.get("qty", 0)),
+            })
 
-        if st.button("📥 テキストから一括取り込み", key="btn_import_text"):
-          if bulk_text.strip():
-            count = 0
-            lines = bulk_text.strip().split("\n")
-            for line in lines:
-              parts = re.split(r"[,,\s\t]+", line.strip())
-              if len(parts) >= 1 and parts[0].isdigit():
-                c_code = parts[0].zfill(4)
-                c_price = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
-                c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-                s_name = code_to_name.get(c_code, c_code)
-
-                st.session_state["holdings"][c_code] = {
-                    "name": s_name,
-                    "buy_price": c_price,
-                    "qty": c_qty,
-                }
-                st.session_state[f"is_holding_{c_code}"] = True
-                count += 1
-            st.success(f"{count} 件の銘柄を一括追加・更新しました！")
-            st.rerun()
+          if not editor_rows:
+            editor_df = pd.DataFrame(
+                columns=[
+                    "銘柄コード",
+                    "銘柄名",
+                    "平均取得単価 (円)",
+                    "保有株数 (株)",
+                ]
+            )
           else:
-            st.warning("テキストが入力されていません。")
+            editor_df = pd.DataFrame(editor_rows)
 
-    day_high = meta.get("regularMarketDayHigh") or df["High"].max()
-    day_low = meta.get("regularMarketDayLow") or df["Low"].min()
-    day_vol = meta.get("regularMarketVolume") or df["Volume"].iloc[-1]
-    high_52 = meta.get("fiftyTwoWeekHigh")
-    low_52 = meta.get("fiftyTwoWeekLow")
+          edited_df = st.data_editor(
+              editor_df,
+              num_rows="dynamic",
+              column_config={
+                  "銘柄コード": st.column_config.TextColumn(
+                      "銘柄コード (4桁)", help="例: 3407", required=True
+                  ),
+                  "銘柄名": st.column_config.TextColumn(
+                      "銘柄名（自動補完）", disabled=True
+                  ),
+                  "平均取得単価 (円)": st.column_config.NumberColumn(
+                      "平均取得単価 (円)", min_value=0.0, step=10.0
+                  ),
+                  "保有株数 (株)": st.column_config.NumberColumn(
+                      "保有株数 (株)", min_value=0, step=100
+                  ),
+              },
+              use_container_width=True,
+              key="holdings_data_editor",
+          )
 
-    with st.expander(
-        "📋 市況情報（PER / PBR / 時価総額 / 年初来高安 など）", expanded=True
-    ):
-      m1, m2, m3, m4, m5 = st.columns(5)
-      with m1:
-        st.write(
-            "**前日終値:**",
-            f"{prev_close:,.1f} 円" if prev_close else "---",
-        )
-        st.write(
-            "**始値:**",
-            f"{df['Open'].iloc[-1]:,.1f} 円" if not df.empty else "---",
-        )
-      with m2:
-        st.write("**高値:**", f"{day_high:,.1f} 円" if day_high else "---")
-        st.write("**安値:**", f"{day_low:,.1f} 円" if day_low else "---")
-      with m3:
-        st.write(
-            "**出来高:**", f"{int(day_vol):,} 株" if day_vol else "---"
-        )
-        st.write("**時価総額:**", extra_info.get("時価総額", "---"))
-      with m4:
-        st.write("**PER:**", extra_info.get("PER", "---"))
-        st.write("**PBR:**", extra_info.get("PBR", "---"))
-      with m5:
-        st.write("**配当利回り:**", extra_info.get("配当利回り", "---"))
-        st.write(
-            "**年初来高値/安値:**",
-            f"{high_52:,.1f} 円 / {low_52:,.1f} 円"
-            if high_52 and low_52
-            else "---",
-        )
+          if st.button("💾 表の内容で一括保存", key="btn_save_bulk_table"):
+            new_holdings = {}
+            for _, row in edited_df.iterrows():
+              c_str = str(row["銘柄コード"]).strip().zfill(4)
+              if c_str and c_str.isdigit() and len(c_str) == 4:
+                b_price = float(row.get("平均取得単価 (円)", 0) or 0.0)
+                h_q = int(row.get("保有株数 (株)", 0) or 0)
+                s_name = code_to_name.get(
+                    c_str, str(row.get("銘柄名") or "不明銘柄")
+                )
+                new_holdings[c_str] = {
+                    "name": s_name,
+                    "buy_price": b_price,
+                    "qty": h_q,
+                }
+                st.session_state[f"is_holding_{c_str}"] = True
+            st.session_state["holdings"] = new_holdings
+            st.success("保有銘柄リストを一括更新しました！")
+            st.rerun()
 
-    # チャート表示
-    df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
-    df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
+        with tab2:
+          st.write(
+              "カンマ、スペース、またはタブ区切りで「銘柄コード, 平均取得単価,"
+              " 保有株数」を1行ずつ入力して一括登録できます。"
+          )
+          bulk_text = st.text_area(
+              "貼り付けエリア",
+              height=150,
+              placeholder="3407, 1050, 200\n7203, 2800, 100",
+          )
 
-    fig = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.03,
-        row_heights=[0.7, 0.3],
-    )
-    fig.add_trace(
-        go.Candlestick(
-            x=df["DateStr"],
-            open=df["Open"],
-            high=df["High"],
-            low=df["Low"],
-            close=df["Close"],
-            name="株価",
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["DateStr"],
-            y=df["SMA_S"],
-            mode="lines",
-            name=f"{sma_short}本線",
-            line=dict(color="orange", width=1.5),
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=df["DateStr"],
-            y=df["SMA_L"],
-            mode="lines",
-            name=f"{sma_long}本線",
-            line=dict(color="#00BFFF", width=1.5),
-        ),
-        row=1,
-        col=1,
-    )
-    fig.add_trace(
-        go.Bar(
-            x=df["DateStr"], y=df["Volume"], name="出来高", marker_color="gray"
-        ),
-        row=2,
-        col=1,
-    )
+          if st.button("📥 テキストから一括取り込み", key="btn_import_text"):
+            if bulk_text.strip():
+              count = 0
+              lines = bulk_text.strip().split("\n")
+              for line in lines:
+                parts = re.split(r"[,,\s\t]+", line.strip())
+                if len(parts) >= 1 and parts[0].isdigit():
+                  c_code = parts[0].zfill(4)
+                  c_price = (
+                      float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+                  )
+                  c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                  s_name = code_to_name.get(c_code, c_code)
 
-    # 水平線（現在値 & 平均取得単価）
-    fig.add_hline(
-        y=latest_price,
-        line_dash="dash",
-        line_color="#00FF7F",
-        line_width=1.5,
-        annotation_text=f"現在値: {latest_price:,.1f}円",
-        annotation_position="bottom right",
-        annotation_font_color="#00FF7F",
-        row=1,
-        col=1,
-    )
+                  st.session_state["holdings"][c_code] = {
+                      "name": s_name,
+                      "buy_price": c_price,
+                      "qty": c_qty,
+                  }
+                  st.session_state[f"is_holding_{c_code}"] = True
+                  count += 1
+              st.success(f"{count} 件の銘柄を一括追加・更新しました！")
+              st.rerun()
+            else:
+              st.warning("テキストが入力されていません。")
 
-    if is_holding and buy_price > 0:
-      fig.add_hline(
-          y=buy_price,
-          line_dash="dot",
-          line_color="#FF4500",
-          line_width=1.5,
-          annotation_text=f"平均取得単価: {buy_price:,.1f}円",
-          annotation_position="top right",
-          annotation_font_color="#FF4500",
+      day_high = meta.get("regularMarketDayHigh") or df["High"].max()
+      day_low = meta.get("regularMarketDayLow") or df["Low"].min()
+      day_vol = meta.get("regularMarketVolume") or df["Volume"].iloc[-1]
+      high_52 = meta.get("fiftyTwoWeekHigh")
+      low_52 = meta.get("fiftyTwoWeekLow")
+
+      with st.expander(
+          "📋 市況情報（PER / PBR / 時価総額 / 年初来高安 など）", expanded=True
+      ):
+        m1, m2, m3, m4, m5 = st.columns(5)
+        with m1:
+          st.write(
+              "**前日終値:**",
+              f"{prev_close:,.1f} 円" if prev_close else "---",
+          )
+          st.write(
+              "**始値:**",
+              f"{df['Open'].iloc[-1]:,.1f} 円" if not df.empty else "---",
+          )
+        with m2:
+          st.write("**高値:**", f"{day_high:,.1f} 円" if day_high else "---")
+          st.write("**安値:**", f"{day_low:,.1f} 円" if day_low else "---")
+        with m3:
+          st.write(
+              "**出来高:**", f"{int(day_vol):,} 株" if day_vol else "---"
+          )
+          st.write("**時価総額:**", extra_info.get("時価総額", "---"))
+        with m4:
+          st.write("**PER:**", extra_info.get("PER", "---"))
+          st.write("**PBR:**", extra_info.get("PBR", "---"))
+        with m5:
+          st.write("**配当利回り:**", extra_info.get("配当利回り", "---"))
+          st.write(
+              "**年初来高値/安値:**",
+              f"{high_52:,.1f} 円 / {low_52:,.1f} 円"
+              if high_52 and low_52
+              else "---",
+          )
+
+      # 指標計算
+      df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
+      df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
+
+      rows = 2
+      row_heights = [0.7, 0.3]
+      if show_rsi and show_macd:
+        rows = 4
+        row_heights = [0.4, 0.2, 0.2, 0.2]
+      elif show_rsi or show_macd:
+        rows = 3
+        row_heights = [0.5, 0.25, 0.25]
+
+      fig = make_subplots(
+          rows=rows,
+          cols=1,
+          shared_xaxes=True,
+          vertical_spacing=0.03,
+          row_heights=row_heights,
+      )
+
+      # メインチャート
+      fig.add_trace(
+          go.Candlestick(
+              x=df["DateStr"],
+              open=df["Open"],
+              high=df["High"],
+              low=df["Low"],
+              close=df["Close"],
+              name="株価",
+          ),
+          row=1,
+          col=1,
+      )
+      fig.add_trace(
+          go.Scatter(
+              x=df["DateStr"],
+              y=df["SMA_S"],
+              mode="lines",
+              name=f"{sma_short}本線",
+              line=dict(color="orange", width=1.5),
+          ),
+          row=1,
+          col=1,
+      )
+      fig.add_trace(
+          go.Scatter(
+              x=df["DateStr"],
+              y=df["SMA_L"],
+              mode="lines",
+              name=f"{sma_long}本線",
+              line=dict(color="#00BFFF", width=1.5),
+          ),
           row=1,
           col=1,
       )
 
-    total_len = len(df)
-    display_count = min(60, total_len)
-    start_idx = total_len - display_count
-    end_idx = total_len - 1
+      # 水平線
+      fig.add_hline(
+          y=latest_price,
+          line_dash="dash",
+          line_color="#00FF7F",
+          line_width=1.5,
+          annotation_text=f"現在値: {latest_price:,.1f}円",
+          annotation_position="bottom right",
+          annotation_font_color="#00FF7F",
+          row=1,
+          col=1,
+      )
 
-    fig.update_layout(
-        template="plotly_dark",
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=500,
-        showlegend=False,
-        dragmode="pan",
-    )
-    fig.update_xaxes(type="category", range=[start_idx, end_idx])
-    st.plotly_chart(fig, use_container_width=True)
+      if is_holding and buy_price > 0:
+        fig.add_hline(
+            y=buy_price,
+            line_dash="dot",
+            line_color="#FF4500",
+            line_width=1.5,
+            annotation_text=f"平均取得単価: {buy_price:,.1f}円",
+            annotation_position="top right",
+            annotation_font_color="#FF4500",
+            row=1,
+            col=1,
+        )
+
+      # 出来高
+      fig.add_trace(
+          go.Bar(
+              x=df["DateStr"],
+              y=df["Volume"],
+              name="出来高",
+              marker_color="gray",
+          ),
+          row=2,
+          col=1,
+      )
+
+      curr_row = 3
+      if show_rsi:
+        df["RSI"] = calculate_rsi(df["Close"])
+        fig.add_trace(
+            go.Scatter(
+                x=df["DateStr"],
+                y=df["RSI"],
+                mode="lines",
+                name="RSI",
+                line=dict(color="#E040FB", width=1.5),
+            ),
+            row=curr_row,
+            col=1,
+        )
+        fig.add_hline(
+            y=70, line_dash="dash", line_color="red", row=curr_row, col=1
+        )
+        fig.add_hline(
+            y=30, line_dash="dash", line_color="green", row=curr_row, col=1
+        )
+        curr_row += 1
+
+      if show_macd:
+        macd, signal, hist = calculate_macd(df["Close"])
+        fig.add_trace(
+            go.Scatter(
+                x=df["DateStr"],
+                y=macd,
+                mode="lines",
+                name="MACD",
+                line=dict(color="#00E676", width=1.5),
+            ),
+            row=curr_row,
+            col=1,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=df["DateStr"],
+                y=signal,
+                mode="lines",
+                name="Signal",
+                line=dict(color="#FF9100", width=1.5),
+            ),
+            row=curr_row,
+            col=1,
+        )
+        fig.add_trace(
+            go.Bar(
+                x=df["DateStr"],
+                y=hist,
+                name="Hist",
+                marker_color="gray",
+            ),
+            row=curr_row,
+            col=1,
+        )
+
+      total_len = len(df)
+      display_count = min(60, total_len)
+      start_idx = total_len - display_count
+      end_idx = total_len - 1
+
+      fig.update_layout(
+          template="plotly_dark",
+          xaxis_rangeslider_visible=False,
+          margin=dict(l=10, r=10, t=10, b=10),
+          height=650 if (show_rsi or show_macd) else 500,
+          showlegend=False,
+          dragmode="pan",
+      )
+      fig.update_xaxes(type="category", range=[start_idx, end_idx])
+      st.plotly_chart(fig, use_container_width=True)
