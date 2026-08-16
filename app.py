@@ -423,18 +423,25 @@ if code:
         yoc_str = "---"
 
       st.subheader("💰 保有株の損益・利回り状況")
-      p_col1, p_col2, p_col3 = st.columns(3)
+      p_col1, p_col2, p_col3, p_col4 = st.columns(4)
       p_col1.metric(
+          label="保有株数",
+          value=f"{holding_qty:,} 株",
+          delta=f"取得単価: {buy_price:,.1f}円",
+          delta_color="off",
+      )
+      p_col2.metric(
           label="1株あたりの株価差",
           value=f"{price_diff:+.1f} 円",
           delta=f"{price_diff_pct:+.2f}%",
       )
-      p_col2.metric(
+      p_col3.metric(
           label="総額の評価損益",
           value=f"{total_profit:+,.0f} 円",
-          delta=f"{holding_qty:,} 株保有",
+          delta=f"投資額: {buy_price * holding_qty:,.0f}円",
+          delta_color="off",
       )
-      p_col3.metric(
+      p_col4.metric(
           label="取得株価の利回り（YOC）",
           value=yoc_str,
           help=(
