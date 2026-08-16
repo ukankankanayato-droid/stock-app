@@ -532,6 +532,34 @@ if code:
         col=1,
     )
 
+    # --- チャート上の水平線（現在値 & 取得単価）の追加 ---
+    # 現在値（緑色の破線）
+    fig.add_hline(
+        y=latest_price,
+        line_dash="dash",
+        line_color="#00FF7F",
+        line_width=1.5,
+        annotation_text=f"現在値: {latest_price:,.1f}円",
+        annotation_position="bottom right",
+        annotation_font_color="#00FF7F",
+        row=1,
+        col=1,
+    )
+
+    # 取得単価（保有設定されている場合のみ表示）
+    if is_holding and buy_price > 0:
+      fig.add_hline(
+          y=buy_price,
+          line_dash="dot",
+          line_color="#FF4500",
+          line_width=1.5,
+          annotation_text=f"取得単価: {buy_price:,.1f}円",
+          annotation_position="top right",
+          annotation_font_color="#FF4500",
+          row=1,
+          col=1,
+      )
+
     # 初期表示範囲を直近60本に設定（左右スクロール・移動を可能に）
     total_len = len(df)
     display_count = min(60, total_len)
