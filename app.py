@@ -13,7 +13,12 @@ st.set_page_config(
     page_title="株価分析アプリ", layout="wide", initial_sidebar_state="collapsed"
 )
 
-st.title("📈 株価分析アプリ")
+# タイトルサイズを調整してスマホでも1行表示
+st.markdown(
+    "<h2 style='font-size: 22px; font-weight: bold; margin-bottom: 12px;'>📈"
+    " 株価分析アプリ</h2>",
+    unsafe_allow_html=True,
+)
 
 
 # 日本取引所グループ(JPX)公式から全上場銘柄データを取得
@@ -30,14 +35,13 @@ def get_all_jpx_stocks():
     df = pd.read_excel(io.BytesIO(res.content))
     df["コード"] = df["コード"].astype(str).str.zfill(4)
     df = df[df["コード"].str.len() == 4]
-    df["label"] = (
-        df["コード"]
-        + " | "
-        + df["銘柄名"]
-        + " ("
-        + df["市場・商品区分"].astype(str)
-        + ")"
+
+    # 市場区分の（内国株式）等を削除して表示をすっきり化
+    df["市場"] = (
+        df["市場・商品区分"].astype(str).str.replace(r"（.*）", "", regex=True)
     )
+    df["label"] = df["コード"] + " | " + df["銘柄名"] + " (" + df["市場"] + ")"
+
     options = df["label"].tolist()
     code_map = dict(zip(df["label"], df["コード"]))
     return options, code_map
@@ -77,7 +81,7 @@ with col1:
       default_idx = i
       break
   selected_stock = st.selectbox(
-      "銘柄を検索・選択（コードや銘柄名の一部を入力すると候補が出ます）",
+      "銘柄検索（コード・名称）",
       options=stock_options,
       index=default_idx,
   )
@@ -176,7 +180,6 @@ def get_from_kabutan(code):
     return None
   soup = BeautifulSoup(res.text, "html.parser")
   info = {}
-
   text = soup.get_text()
 
   m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
@@ -273,7 +276,6 @@ def get_from_yahoo_jp(code):
 def fetch_extra_quote_info(symbol_code):
   info = {"PER": "---", "PBR": "---", "時価総額": "---", "配当利回り": "---"}
 
-  # 順次試行して空項目を埋める
   for fetch_func in [get_from_kabutan, get_from_minkabu, get_from_yahoo_jp]:
     try:
       data = fetch_func(symbol_code)
