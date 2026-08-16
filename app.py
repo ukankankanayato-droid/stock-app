@@ -136,7 +136,7 @@ if is_holding:
   default_qty = int(saved_item.get("qty", 100))
 
   buy_price = st.sidebar.number_input(
-      "取得単価（購入株価 / 円）",
+      "平均取得単価（購入株価 / 円）",
       min_value=0.0,
       value=default_price,
       step=10.0,
@@ -420,7 +420,7 @@ if code:
           label="取得株価の利回り（YOC）",
           value=yoc_str,
           help=(
-              "現在の配当利回りと取得単価から算出した、購入価格に対する年間配当利回りです"
+              "現在の配当利回りと平均取得単価から算出した、購入価格に対する年間配当利回りです"
           ),
       )
 
@@ -432,7 +432,7 @@ if code:
           list_data.append({
               "銘柄コード": h_code,
               "銘柄名": h_info.get("name", "---"),
-              "取得単価 (円)": f"{h_info.get('buy_price', 0):,.1f}",
+              "平均取得単価 (円)": f"{h_info.get('buy_price', 0):,.1f}",
               "保有株数 (株)": f"{h_info.get('qty', 0):,}",
               "投資原本 (円)": (
                   f"{h_info.get('buy_price', 0) * h_info.get('qty', 0):,.0f}"
@@ -532,7 +532,7 @@ if code:
         col=1,
     )
 
-    # --- チャート上の水平線（現在値 & 取得単価）の追加 ---
+    # --- チャート上の水平線（現在値 & 平均取得単価）の追加 ---
     # 現在値（緑色の破線）
     fig.add_hline(
         y=latest_price,
@@ -546,14 +546,14 @@ if code:
         col=1,
     )
 
-    # 取得単価（保有設定されている場合のみ表示）
+    # 平均取得単価（保有設定されている場合のみ表示）
     if is_holding and buy_price > 0:
       fig.add_hline(
           y=buy_price,
           line_dash="dot",
           line_color="#FF4500",
           line_width=1.5,
-          annotation_text=f"取得単価: {buy_price:,.1f}円",
+          annotation_text=f"平均取得単価: {buy_price:,.1f}円",
           annotation_position="top right",
           annotation_font_color="#FF4500",
           row=1,
