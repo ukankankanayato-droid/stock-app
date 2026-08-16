@@ -162,53 +162,130 @@ def fetch_stock_data_and_meta(symbol_code, interval, days):
   return df, meta
 
 
-# PER / PBR / 時価総額 / 配当利回りを取得する精密抽出関数
-@st.cache_data(ttl=300)
-def fetch_extra_quote_info(symbol_code):
-  info = {"PER": "---", "PBR": "---", "時価総額": "---", "配当利回り": "---"}
+# 株探からの指標取得関数
+def get_from_kabutan(code):
+  url = f"https://kabutan.jp/stock/?code={code}"
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-      )
+      ),
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
   }
+  res = requests.get(url, headers=headers, timeout=5)
+  if res.status_code != 200:
+    return None
+  soup = BeautifulSoup(res.text, "html.parser")
+  info = {}
 
-  try:
-    url_k = f"https://kabutan.jp/stock/?code={symbol_code}"
-    res_k = requests.get(url_k, headers=headers, timeout=5)
-    if res_k.status_code == 200:
-      soup_k = BeautifulSoup(res_k.text, "html.parser")
-      fin_info = soup_k.find("div", id="stock_fin_info")
-      if fin_info:
-        for tr in fin_info.find_all("tr"):
-          ths = tr.find_all("th")
-          tds = tr.find_all("td")
-          for th, td in zip(ths, tds):
-            th_text = th.get_text(strip=True)
-            td_text = td.get_text(strip=True)
+  text = soup.get_text()
 
-            # (08/14) などの日付を除去して数値のみにする
-            val_clean = re.sub(r"\(\d{2}/\d{2}\)", "", td_text).strip()
+  m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
+  if m_per:
+    info["PER"] = f"{m_per.group(1)} 倍"
 
-            if "PER" in th_text and info["PER"] == "---":
-              if val_clean:
-                info["PER"] = (
-                    val_clean if "倍" in val_clean else f"{val_clean} 倍"
-                )
-            elif "PBR" in th_text and info["PBR"] == "---":
-              if val_clean:
-                info["PBR"] = (
-                    val_clean if "倍" in val_clean else f"{val_clean} 倍"
-                )
-            elif "利回り" in th_text and info["配当利回り"] == "---":
-              if val_clean:
-                info["配当利回り"] = (
-                    val_clean if "%" in val_clean else f"{val_clean} %"
-                )
-            elif "時価総額" in th_text and info["時価総額"] == "---":
-              if val_clean:
-                info["時価総額"] = val_clean
-  except Exception:
-    pass
+  m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
+  if m_pbr:
+    info["PBR"] = f"{m_pbr.group(1)} 倍"
+
+  m_div = re.search(r"利回り[^\d]*([\d\.]+)\s*%", text)
+  if m_div:
+    info["配当利回り"] = f"{m_div.group(1)} %"
+
+  m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(億円|百万円)", text)
+  if m_cap:
+    info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
+
+  return info
+
+
+# みんかぶからの指標取得関数
+def get_from_minkabu(code):
+  url = f"https://minkabu.jp/stock/{code}"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      ),
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+  }
+  res = requests.get(url, headers=headers, timeout=5)
+  if res.status_code != 200:
+    return None
+  soup = BeautifulSoup(res.text, "html.parser")
+  info = {}
+  text = soup.get_text()
+
+  m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
+  if m_per:
+    info["PER"] = f"{m_per.group(1)} 倍"
+
+  m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
+  if m_pbr:
+    info["PBR"] = f"{m_pbr.group(1)} 倍"
+
+  m_div = re.search(r"(?:予想)?配当利回り[^\d]*([\d\.]+)\s*%", text)
+  if m_div:
+    info["配当利回り"] = f"{m_div.group(1)} %"
+
+  m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(百万円|億円|兆円)", text)
+  if m_cap:
+    info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
+
+  return info
+
+
+# Yahoo!ファイナンス JPからの指標取得関数
+def get_from_yahoo_jp(code):
+  url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+  headers = {
+      "User-Agent": (
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+      ),
+      "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+  }
+  res = requests.get(url, headers=headers, timeout=5)
+  if res.status_code != 200:
+    return None
+  soup = BeautifulSoup(res.text, "html.parser")
+  info = {}
+  text = soup.get_text()
+
+  m_per = re.search(r"PER[^\d]*([\d\.]+)\s*倍", text)
+  if m_per:
+    info["PER"] = f"{m_per.group(1)} 倍"
+
+  m_pbr = re.search(r"PBR[^\d]*([\d\.]+)\s*倍", text)
+  if m_pbr:
+    info["PBR"] = f"{m_pbr.group(1)} 倍"
+
+  m_div = re.search(r"配当利回り[^\d]*([\d\.]+)\s*%", text)
+  if m_div:
+    info["配当利回り"] = f"{m_div.group(1)} %"
+
+  m_cap = re.search(r"時価総額[^\d]*([\d,]+)\s*(百万円|億円|兆円)", text)
+  if m_cap:
+    info["時価総額"] = f"{m_cap.group(1)} {m_cap.group(2)}"
+
+  return info
+
+
+# 複数ソースから指標を自動補完するメイン処理
+@st.cache_data(ttl=300)
+def fetch_extra_quote_info(symbol_code):
+  info = {"PER": "---", "PBR": "---", "時価総額": "---", "配当利回り": "---"}
+
+  # 順次試行して空項目を埋める
+  for fetch_func in [get_from_kabutan, get_from_minkabu, get_from_yahoo_jp]:
+    try:
+      data = fetch_func(symbol_code)
+      if data:
+        for k, v in data.items():
+          if info[k] == "---" and v:
+            info[k] = v
+    except Exception:
+      pass
+
+    if not any(v == "---" for v in info.values()):
+      break
 
   return info
 
