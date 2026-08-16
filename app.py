@@ -21,7 +21,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# セッション状態の初期化
+# セッション状態の初期化（保有データの一元管理）
 if "holdings" not in st.session_state:
   st.session_state["holdings"] = {}
 
@@ -83,10 +83,9 @@ TIMEFRAMES = {
     "月足": ("1mo", 1825, 12, 24),
 }
 
-# --- サイドバー表示設定 ---
+# --- サイドバー設定 ---
 st.sidebar.header("💼 設定・ナビゲーション")
 
-# モード切替
 app_mode = st.sidebar.radio(
     "表示モード", ["📈 個別銘柄チャート・分析", "📊 ポートフォリオ総合ダッシュボード"]
 )
@@ -99,14 +98,14 @@ show_macd = st.sidebar.checkbox("MACDを表示", value=False)
 st.sidebar.markdown("---")
 st.sidebar.subheader("📂 端末間のデータ移行（バックアップ）")
 st.sidebar.caption(
-    "他のPCやスマホへデータを移す時は、下のボタンで書き出し・読み込みを行ってください。"
+    "他のPCやスマホへデータを移す時は、以下の機能を使用してください。"
 )
 
 json_str = json.dumps(
     st.session_state["holdings"], ensure_ascii=False, indent=2
 )
 st.sidebar.download_button(
-    label="📥 ポートフォリオ設定を書き出す",
+    label="📥 ポートフォリオ設定を書き出す (JSON)",
     data=json_str,
     file_name="my_portfolio.json",
     mime="application/json",
@@ -120,8 +119,6 @@ if uploaded_file is not None:
   try:
     imported_data = json.load(uploaded_file)
     st.session_state["holdings"] = imported_data
-    for h_code in imported_data:
-      st.session_state[f"is_holding_{h_code}"] = True
     st.sidebar.success("設定を読み込みました！")
     st.rerun()
   except Exception as e:
@@ -130,7 +127,11 @@ if uploaded_file is not None:
 
 # --- データ取得関数 ---
 def fetch_stock_data_and_meta(symbol_code, interval, days):
-  ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
+  ticker = (
+      f"{symbol_code}.T"
+      if (symbol_code.isdigit() or symbol_code.isalnum())
+      else symbol_code
+  )
   end_ts = int(time.time())
   start_ts = end_ts - (days * 86400)
   headers = {
@@ -296,7 +297,6 @@ def fetch_extra_quote_info(symbol_code):
   return info
 
 
-# テクニカル指標計算
 def calculate_rsi(series, period=14):
   delta = series.diff()
   gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -314,7 +314,7 @@ def calculate_macd(series, short=12, long=26, signal=9):
   return macd, macd_signal, macd_hist
 
 
-# === 画面制御 ===
+# === 画面切替 ===
 if app_mode == "📊 ポートフォリオ総合ダッシュボード":
   st.subheader("📊 保有銘柄・トータル資産ダッシュボード")
 
@@ -398,17 +398,14 @@ else:
 
   interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
-  # 保有株設定サイドバー
+  # 保有株設定サイドバー（状態の二重保持を解消）
   saved_item = st.session_state["holdings"].get(code, {})
   is_saved = code in st.session_state["holdings"]
-
-  if is_saved and f"is_holding_{code}" not in st.session_state:
-    st.session_state[f"is_holding_{code}"] = True
 
   is_holding = st.sidebar.checkbox(
       "この銘柄を保有している",
       value=is_saved,
-      key=f"is_holding_{code}",
+      key=f"chk_holding_{code}",
   )
 
   buy_price = 0.0
@@ -447,13 +444,11 @@ else:
             "buy_price": buy_price,
             "qty": holding_qty,
         }
-        st.session_state[f"is_holding_{code}"] = True
         st.sidebar.success("保存しました！")
         st.rerun()
     with col_btn2:
       if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
         del st.session_state["holdings"][code]
-        st.session_state[f"is_holding_{code}"] = False
         st.sidebar.info("保存を解除しました。")
         st.rerun()
 
@@ -521,7 +516,7 @@ else:
               ),
           )
 
-      # 保有銘柄リスト（一括登録・表形式編集）
+      # 一括登録・表形式編集パネル
       with st.expander(
           "📁 保有銘柄リスト（一括登録・表形式編集）", expanded=False
       ):
@@ -562,7 +557,7 @@ else:
               num_rows="dynamic",
               column_config={
                   "銘柄コード": st.column_config.TextColumn(
-                      "銘柄コード (4桁)", help="例: 3407", required=True
+                      "銘柄コード (4桁/英数字)", help="例: 3407, 265A", required=True
                   ),
                   "銘柄名": st.column_config.TextColumn(
                       "銘柄名（自動補完）", disabled=True
@@ -581,19 +576,18 @@ else:
           if st.button("💾 表の内容で一括保存", key="btn_save_bulk_table"):
             new_holdings = {}
             for _, row in edited_df.iterrows():
-              c_str = str(row["銘柄コード"]).strip().zfill(4)
-              if c_str and c_str.isdigit() and len(c_str) == 4:
+              c_str = str(row["銘柄コード"]).strip().upper().zfill(4)
+              if c_str and len(c_str) == 4 and c_str.isalnum():
                 b_price = float(row.get("平均取得単価 (円)", 0) or 0.0)
                 h_q = int(row.get("保有株数 (株)", 0) or 0)
                 s_name = code_to_name.get(
-                    c_str, str(row.get("銘柄名") or "不明銘柄")
+                    c_str, str(row.get("銘柄名") or c_str)
                 )
                 new_holdings[c_str] = {
                     "name": s_name,
                     "buy_price": b_price,
                     "qty": h_q,
                 }
-                st.session_state[f"is_holding_{c_str}"] = True
             st.session_state["holdings"] = new_holdings
             st.success("保有銘柄リストを一括更新しました！")
             st.rerun()
@@ -606,7 +600,9 @@ else:
           bulk_text = st.text_area(
               "貼り付けエリア",
               height=150,
-              placeholder="3407, 1050, 200\n7203, 2800, 100",
+              placeholder=(
+                  "3407, 1050, 200\n265A, 1009, 100\n7203, 2800, 100"
+              ),
           )
 
           if st.button("📥 テキストから一括取り込み", key="btn_import_text"):
@@ -615,21 +611,21 @@ else:
               lines = bulk_text.strip().split("\n")
               for line in lines:
                 parts = re.split(r"[,,\s\t]+", line.strip())
-                if len(parts) >= 1 and parts[0].isdigit():
-                  c_code = parts[0].zfill(4)
-                  c_price = (
-                      float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
-                  )
-                  c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
-                  s_name = code_to_name.get(c_code, c_code)
+                if len(parts) >= 1:
+                  c_code = parts[0].strip().upper().zfill(4)
+                  if len(c_code) == 4 and c_code.isalnum():
+                    c_price = (
+                        float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+                    )
+                    c_qty = int(parts[2]) if len(parts) > 2 and parts[2] else 0
+                    s_name = code_to_name.get(c_code, c_code)
 
-                  st.session_state["holdings"][c_code] = {
-                      "name": s_name,
-                      "buy_price": c_price,
-                      "qty": c_qty,
-                  }
-                  st.session_state[f"is_holding_{c_code}"] = True
-                  count += 1
+                    st.session_state["holdings"][c_code] = {
+                        "name": s_name,
+                        "buy_price": c_price,
+                        "qty": c_qty,
+                    }
+                    count += 1
               st.success(f"{count} 件の銘柄を一括追加・更新しました！")
               st.rerun()
             else:
@@ -674,7 +670,7 @@ else:
               else "---",
           )
 
-      # 指標計算
+      # チャート表示
       df["SMA_S"] = df["Close"].rolling(window=sma_short).mean()
       df["SMA_L"] = df["Close"].rolling(window=sma_long).mean()
 
@@ -695,7 +691,6 @@ else:
           row_heights=row_heights,
       )
 
-      # メインチャート
       fig.add_trace(
           go.Candlestick(
               x=df["DateStr"],
@@ -731,7 +726,6 @@ else:
           col=1,
       )
 
-      # 水平線
       fig.add_hline(
           y=latest_price,
           line_dash="dash",
@@ -757,7 +751,6 @@ else:
             col=1,
         )
 
-      # 出来高
       fig.add_trace(
           go.Bar(
               x=df["DateStr"],
