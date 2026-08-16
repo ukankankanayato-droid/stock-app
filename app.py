@@ -1,4 +1,5 @@
 import datetime
+import time
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -40,10 +41,13 @@ else:
   code = STOCK_DICT[selected_option]
 
 
-@st.cache_data(ttl=300)
 def fetch_stock_data(symbol_code):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
-  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?range=6m&interval=1d"
+
+  # 過去180日間のタイムスタンプを明示的に算出
+  end_ts = int(time.time())
+  start_ts = end_ts - (180 * 86400)
+
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -51,36 +55,50 @@ def fetch_stock_data(symbol_code):
       )
   }
 
+  url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval=1d"
+
   try:
     res = requests.get(url, headers=headers, timeout=10)
     if res.status_code != 200:
-      return None
+      url = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}?period1={start_ts}&period2={end_ts}&interval=1d"
+      res = requests.get(url, headers=headers, timeout=10)
+      if res.status_code != 200:
+        return None
 
     data = res.json()
     result = data["chart"]["result"][0]
-    timestamps = result["timestamp"]
+    timestamps = result.get("timestamp", [])
     quote = result["indicators"]["quote"][0]
 
-    df = pd.DataFrame({
-        "Date": [
-            datetime.datetime.fromtimestamp(ts) for ts in timestamps
-        ],
-        "Open": quote.get("open", []),
-        "High": quote.get("high", []),
-        "Low": quote.get("low", []),
-        "Close": quote.get("close", []),
-        "Volume": quote.get("volume", []),
-    })
+    opens = quote.get("open", [])
+    highs = quote.get("high", [])
+    lows = quote.get("low", [])
+    closes = quote.get("close", [])
+    volumes = quote.get("volume", [])
 
-    # 出来高の空データを0で埋め、株価が存在するデータのみ抽出
-    df["Volume"] = df["Volume"].fillna(0)
-    df = df.dropna(subset=["Open", "High", "Low", "Close"]).reset_index(
-        drop=True
-    )
+    if not timestamps or not closes:
+      return None
 
-    # 日付表示のフォーマット（土日の空白期間を詰めて綺麗に表示）
+    # 値が存在する日数のみを抽出
+    records = []
+    for ts, o, h, l, c, v in zip(
+        timestamps, opens, highs, lows, closes, volumes
+    ):
+      if o is not None and h is not None and l is not None and c is not None:
+        records.append({
+            "Date": datetime.datetime.fromtimestamp(ts),
+            "Open": o,
+            "High": h,
+            "Low": l,
+            "Close": c,
+            "Volume": v if v is not None else 0,
+        })
+
+    df = pd.DataFrame(records)
+    if df.empty:
+      return None
+
     df["DateStr"] = df["Date"].dt.strftime("%Y-%m-%d")
-
     return df
   except Exception:
     return None
@@ -91,10 +109,10 @@ if code:
 
   if df is None or df.empty:
     st.error(
-        "株価データが取得できませんでした。銘柄コードを確認するか、少し時間をおいて再度お試しください。"
+        "株価データが取得できませんでした。銘柄コードを確認するか、しばらく置いてから再試行してください。"
     )
   else:
-    # 移動平均線（5日・25日）
+    # 5日・25日移動平均線
     df["SMA5"] = df["Close"].rolling(window=5).mean()
     df["SMA25"] = df["Close"].rolling(window=25).mean()
 
@@ -153,10 +171,7 @@ if code:
     # 出来高
     fig.add_trace(
         go.Bar(
-            x=df["DateStr"],
-            y=df["Volume"],
-            name="出来高",
-            marker_color="gray",
+            x=df["DateStr"], y=df["Volume"], name="出来高", marker_color="gray"
         ),
         row=2,
         col=1,
@@ -170,7 +185,6 @@ if code:
         showlegend=False,
     )
 
-    # X軸カテゴリ化（土日の隙間をなくし、全期間のローソク足を適正表示）
     fig.update_xaxes(type="category")
 
     st.plotly_chart(fig, use_container_width=True)
