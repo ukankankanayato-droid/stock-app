@@ -1,6 +1,9 @@
 import datetime
 import io
+import json
+import re
 import time
+from bs4 import BeautifulSoup
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -89,7 +92,7 @@ with col2:
 interval, days, sma_short, sma_long = TIMEFRAMES[selected_tf]
 
 
-# チャートデータとmeta情報（前日終値・高安値など）を取得する関数
+# チャートデータとmeta情報を取得
 def fetch_stock_data_and_meta(symbol_code, interval, days):
   ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
   end_ts = int(time.time())
@@ -98,7 +101,6 @@ def fetch_stock_data_and_meta(symbol_code, interval, days):
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-          " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       )
   }
 
@@ -161,48 +163,69 @@ def fetch_stock_data_and_meta(symbol_code, interval, days):
   return df, meta
 
 
-# Quote APIから PER / PBR / 時価総額 などの補足市況データを取得する関数
+# PER / PBR / 時価総額 / 配当利回りを国内サイト（株探・Yahoo JP）からスクレイピングして取得する関数
 @st.cache_data(ttl=300)
 def fetch_extra_quote_info(symbol_code):
-  ticker = f"{symbol_code}.T" if symbol_code.isdigit() else symbol_code
+  info = {"PER": "---", "PBR": "---", "時価総額": "---", "配当利回り": "---"}
   headers = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
       )
   }
 
-  info = {}
-  urls = [
-      f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={ticker}",
-      f"https://query2.finance.yahoo.com/v7/finance/quote?symbols={ticker}",
-  ]
+  # 1. 株探 (Kabutan) からの取得
+  try:
+    url_k = f"https://kabutan.jp/stock/?code={symbol_code}"
+    res_k = requests.get(url_k, headers=headers, timeout=5)
+    if res_k.status_code == 200:
+      soup_k = BeautifulSoup(res_k.text, "html.parser")
+      fin_info = soup_k.find("div", id="stock_fin_info")
+      if fin_info:
+        for tr in fin_info.find_all("tr"):
+          th = tr.find("th")
+          td = tr.find("td")
+          if th and td:
+            label = th.get_text(strip=True)
+            val = td.get_text(strip=True)
+            if "PER" in label and info["PER"] == "---":
+              info["PER"] = val
+            elif "PBR" in label and info["PBR"] == "---":
+              info["PBR"] = val
+            elif "利回り" in label and info["配当利回り"] == "---":
+              info["配当利回り"] = val
+            elif "時価総額" in label and info["時価総額"] == "---":
+              info["時価総額"] = val
+  except Exception:
+    pass
 
-  for url in urls:
+  # 2. 未取得項目があれば Yahoo!ファイナンス JP から補完
+  if any(v == "---" for v in info.values()):
     try:
-      res = requests.get(url, headers=headers, timeout=5)
-      if res.status_code == 200:
-        quote_data = res.json().get("quoteResponse", {}).get("result", [])
-        if quote_data:
-          q = quote_data[0]
-
-          pe = q.get("trailingPE") or q.get("forwardPE")
-          info["PER"] = f"{pe:.2f} 倍" if pe else "---"
-
-          pbr = q.get("priceToBook")
-          info["PBR"] = f"{pbr:.2f} 倍" if pbr else "---"
-
-          mcap = q.get("marketCap")
-          info["時価総額"] = (
-              f"{mcap / 100000000:,.1f} 億円" if mcap else "---"
-          )
-
-          div_yield = q.get("trailingAnnualDividendYield")
-          info["配当利回り"] = (
-              f"{div_yield * 100:.2f} %" if div_yield else "---"
-          )
-          break
+      url_y = f"https://finance.yahoo.co.jp/quote/{symbol_code}"
+      res_y = requests.get(url_y, headers=headers, timeout=5)
+      if res_y.status_code == 200:
+        soup_y = BeautifulSoup(res_y.text, "html.parser")
+        for item in soup_y.find_all(["dl", "tr", "li"]):
+          text = item.get_text()
+          if "PER" in text and info["PER"] == "---":
+            nodes = item.find_all(["dd", "td", "span"])
+            if len(nodes) >= 2:
+              info["PER"] = nodes[-1].get_text(strip=True)
+          if "PBR" in text and info["PBR"] == "---":
+            nodes = item.find_all(["dd", "td", "span"])
+            if len(nodes) >= 2:
+              info["PBR"] = nodes[-1].get_text(strip=True)
+          if "時価総額" in text and info["時価総額"] == "---":
+            nodes = item.find_all(["dd", "td", "span"])
+            if len(nodes) >= 2:
+              info["時価総額"] = nodes[-1].get_text(strip=True)
+          if "配当利回り" in text and info["配当利回り"] == "---":
+            nodes = item.find_all(["dd", "td", "span"])
+            if len(nodes) >= 2:
+              info["配当利回り"] = nodes[-1].get_text(strip=True)
     except Exception:
-      continue
+      pass
+
   return info
 
 
