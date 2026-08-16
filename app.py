@@ -131,6 +131,10 @@ st.sidebar.header("💼 保有株の設定")
 saved_item = st.session_state["holdings"].get(code, {})
 is_saved = code in st.session_state["holdings"]
 
+# 保存済み銘柄の場合、チェックボックスの初期状態をTrueに同期
+if is_saved and f"is_holding_{code}" not in st.session_state:
+  st.session_state[f"is_holding_{code}"] = True
+
 is_holding = st.sidebar.checkbox(
     "この銘柄を保有している",
     value=is_saved,
@@ -173,12 +177,14 @@ if is_holding:
           "buy_price": buy_price,
           "qty": holding_qty,
       }
+      st.session_state[f"is_holding_{code}"] = True
       save_holdings(st.session_state["holdings"])
       st.sidebar.success("保存しました！")
       st.rerun()
   with col_btn2:
     if is_saved and st.sidebar.button("🗑️ 解除", key=f"btn_del_{code}"):
       del st.session_state["holdings"][code]
+      st.session_state[f"is_holding_{code}"] = False
       save_holdings(st.session_state["holdings"])
       st.sidebar.info("保存を解除しました。")
       st.rerun()
@@ -204,6 +210,8 @@ if uploaded_file is not None:
   try:
     imported_data = json.load(uploaded_file)
     st.session_state["holdings"] = imported_data
+    for h_code in imported_data:
+      st.session_state[f"is_holding_{h_code}"] = True
     save_holdings(imported_data)
     st.sidebar.success("設定を復元しました！")
     st.rerun()
@@ -440,7 +448,7 @@ if code:
     ):
       tab1, tab2 = st.tabs(["📝 表形式で一括編集", "📋 テキスト一括貼り付け"])
 
-      # タブ1: 表形式編集（st.data_editor）
+      # タブ1: 表形式編集
       with tab1:
         st.write(
             "以下の表で直接銘柄の追加・編集・削除が行えます。最後に「一括保存」を押してください。"
@@ -505,6 +513,7 @@ if code:
                   "buy_price": b_price,
                   "qty": h_q,
               }
+              st.session_state[f"is_holding_{c_str}"] = True
           st.session_state["holdings"] = new_holdings
           save_holdings(new_holdings)
           st.success("保有銘柄リストを一括更新しました！")
@@ -543,6 +552,7 @@ if code:
                     "buy_price": c_price,
                     "qty": c_qty,
                 }
+                st.session_state[f"is_holding_{c_code}"] = True
                 count += 1
             save_holdings(st.session_state["holdings"])
             st.success(f"{count} 件の銘柄を一括追加・更新しました！")
