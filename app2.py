@@ -9,7 +9,7 @@ import yfinance as yf
 # 画面設定
 st.set_page_config(page_title="Stock Chart App", layout="wide")
 
-# カスタムCSS（ダークモード & チェックボックス・入力欄の文字サイズ最適化）
+# カスタムCSS（スマホでの「6列完全横一列固定」＆「溢れ・縦積み防止」）
 st.markdown(
     """
     <style>
@@ -19,21 +19,49 @@ st.markdown(
         color: #ffffff !important; 
     }
 
-    /* チェックボックスの文字サイズとはみ出し防止 */
+    /* スマホ画面で st.columns が縦積みになるのを強制的に横一列へ固定 */
+    div[data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        justify-content: space-between !important;
+        align-items: center !important;
+        gap: 0px !important;
+        width: 100% !important;
+    }
+    
+    div[data-testid="column"] {
+        flex: 1 1 0% !important;
+        min-width: 0 !important;
+        padding: 0 1px !important;
+    }
+
+    /* チェックボックス全体の文字・余白をスマホ画面（360px〜）用に最小化 */
     [data-testid="stCheckbox"] {
-        padding: 2px 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+    [data-testid="stCheckbox"] label {
+        padding-left: 0px !important;
+        gap: 2px !important;
     }
     [data-testid="stCheckbox"] label span p {
-        font-size: 13px !important;
+        font-size: 10px !important;
         white-space: nowrap !important;
         color: #ffffff !important;
+        letter-spacing: -0.8px !important;
+    }
+    /* チェックボックスのアイコンをわずかに縮小して横幅を確保 */
+    [data-testid="stCheckbox"] label span div {
+        transform: scale(0.8);
+        margin: 0 -2px !important;
     }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
-# 候補として表示する主要銘柄辞書（タップ・入力で絞り込み検索可能）
+# 候補銘柄辞書
 STOCK_CANDIDATES = {
     "150A | JSH": "150A.T",
     "6986 | フタバ産業": "6986.T",
@@ -52,7 +80,7 @@ STOCK_CANDIDATES = {
 }
 
 
-# 銘柄名・コード自動解決関数
+# 銘柄自動検索関数
 def resolve_symbol(query):
     query = query.strip()
     if not query:
@@ -81,7 +109,7 @@ def resolve_symbol(query):
     return f"{query}.T"
 
 
-# RCI (Rank Correlation Index) 計算関数
+# RCI計算関数
 def calculate_rci(close, period):
     def _rci(s):
         d = np.arange(len(s))[::-1]
@@ -94,18 +122,18 @@ def calculate_rci(close, period):
     return close.rolling(window=period).apply(_rci, raw=True)
 
 
-# データ取得関数
+# データ取得関数（NaN行の自動除外処理を追加）
 @st.cache_data(ttl=300)
 def fetch_data(symbol):
     df = yf.download(symbol, period="1y", interval="1d")
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
+    # 株価データがないNaN行（市場準備時間など）を除外
+    df = df.dropna(subset=["Close", "Open", "High", "Low"])
     return df
 
 
 # --- UI構成 ---
-
-# 1. 銘柄選択（タップで候補一覧＆文字入力で検索・絞り込み可能）
 selected_option = st.selectbox(
     "銘柄選択",
     options=list(STOCK_CANDIDATES.keys()),
@@ -125,24 +153,21 @@ else:
     ticker_symbol = STOCK_CANDIDATES[selected_option]
     display_title = selected_option
 
-# 2. 指標チェックボックス（スマホ画面で溢れないよう 3列×2行 に配置）
-row1_col1, row1_col2, row1_col3 = st.columns(3)
-show_nikkei = row1_col1.checkbox("日経", value=True)
-show_ma5 = row1_col2.checkbox("MA5", value=True)
-show_ma25 = row1_col3.checkbox("MA25", value=True)
+# チェックボックス（スマホ画面幅に合わせて1行6並びを固定）
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+show_nikkei = c1.checkbox("日経", value=True)
+show_ma5 = c2.checkbox("MA5", value=True)
+show_ma25 = c3.checkbox("MA25", value=True)
+show_ma75 = c4.checkbox("MA75", value=True)
+show_rci = c5.checkbox("RCI", value=True)
+show_macd = c6.checkbox("MACD", value=False)
 
-row2_col1, row2_col2, row2_col3 = st.columns(3)
-show_ma75 = row2_col1.checkbox("MA75", value=True)
-show_rci = row2_col2.checkbox("RCI", value=True)
-show_macd = row2_col3.checkbox("MACD", value=False)
-
-# データロード
+# データ取得
 df = fetch_data(ticker_symbol)
 
 if df.empty:
     st.error(f"データを取得できませんでした: {display_title}")
 else:
-    # 銘柄ヘッダー情報表示
     latest = df.iloc[-1]
     prev = df.iloc[-2] if len(df) > 1 else latest
     diff = latest["Close"] - prev["Close"]
@@ -156,7 +181,7 @@ else:
         unsafe_allow_html=True,
     )
 
-    # チャート描画部
+    # 3段チャート作成 (メイン, 出来高, RCI)
     fig = make_subplots(
         rows=3,
         cols=1,
@@ -222,7 +247,7 @@ else:
             col=1,
         )
 
-    # 日経平均（オーバーレイ）
+    # 日経平均
     if show_nikkei:
         nk_df = fetch_data("^N225")
         if not nk_df.empty:
@@ -298,7 +323,7 @@ else:
                 col=1,
             )
 
-    # レイアウト固定設定
+    # レイアウト設定
     fig.update_layout(
         template="plotly_dark",
         height=660,
