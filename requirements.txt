@@ -1,7 +1,5 @@
 streamlit
-pandas
 plotly
-requests
-xlrd
-openpyxl
-beautifulsoup4
+pandas
+yfinance
+numpy
