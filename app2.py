@@ -9,17 +9,24 @@ import yfinance as yf
 # 画面設定
 st.set_page_config(page_title="Stock Chart App", layout="wide")
 
-# カスタムCSS（スマホでの「6列完全横一列固定」＆「溢れ・縦積み防止」）
+# カスタムCSS（スマホ画面幅に6個のチェックボックスを100%収める超コンパクト設定）
 st.markdown(
     """
     <style>
     .stApp { background-color: #0d0d0d; color: #ffffff; }
+    
+    /* 画面全体の横スクロール・はみ出しを防止 */
+    html, body, [data-testid="stAppViewContainer"], .main {
+        max-width: 100vw !important;
+        overflow-x: hidden !important;
+    }
+
     div[data-baseweb="input"], div[data-baseweb="select"] { 
         background-color: #1a1a1a !important; 
         color: #ffffff !important; 
     }
 
-    /* スマホ画面で st.columns が縦積みになるのを強制的に横一列へ固定 */
+    /* 6列カラムをスマホ画面幅に強制フィット */
     div[data-testid="stHorizontalBlock"] {
         display: flex !important;
         flex-direction: row !important;
@@ -28,33 +35,45 @@ st.markdown(
         align-items: center !important;
         gap: 0px !important;
         width: 100% !important;
-    }
-    
-    div[data-testid="column"] {
-        flex: 1 1 0% !important;
-        min-width: 0 !important;
-        padding: 0 1px !important;
-    }
-
-    /* チェックボックス全体の文字・余白をスマホ画面（360px〜）用に最小化 */
-    [data-testid="stCheckbox"] {
         padding: 0 !important;
         margin: 0 !important;
     }
-    [data-testid="stCheckbox"] label {
-        padding-left: 0px !important;
-        gap: 2px !important;
+    
+    div[data-testid="column"] {
+        flex: 1 1 auto !important;
+        min-width: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
     }
+
+    /* チェックボックス要素の極小化 */
+    [data-testid="stCheckbox"] {
+        padding: 0 !important;
+        margin: 0 !important;
+        min-width: 0 !important;
+    }
+    
+    [data-testid="stCheckbox"] label {
+        padding: 0 !important;
+        margin: 0 !important;
+        gap: 1px !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+    
     [data-testid="stCheckbox"] label span p {
         font-size: 10px !important;
+        line-height: 1 !important;
         white-space: nowrap !important;
         color: #ffffff !important;
         letter-spacing: -0.8px !important;
     }
-    /* チェックボックスのアイコンをわずかに縮小して横幅を確保 */
+
+    /* チェックボックスアイコンの縮小 */
+    [data-testid="stCheckbox"] label div[role="checkbox"],
     [data-testid="stCheckbox"] label span div {
-        transform: scale(0.8);
-        margin: 0 -2px !important;
+        transform: scale(0.65) !important;
+        margin: 0 -4px !important;
     }
     </style>
 """,
@@ -122,13 +141,12 @@ def calculate_rci(close, period):
     return close.rolling(window=period).apply(_rci, raw=True)
 
 
-# データ取得関数（NaN行の自動除外処理を追加）
+# データ取得関数
 @st.cache_data(ttl=300)
 def fetch_data(symbol):
     df = yf.download(symbol, period="1y", interval="1d")
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    # 株価データがないNaN行（市場準備時間など）を除外
     df = df.dropna(subset=["Close", "Open", "High", "Low"])
     return df
 
@@ -153,7 +171,7 @@ else:
     ticker_symbol = STOCK_CANDIDATES[selected_option]
     display_title = selected_option
 
-# チェックボックス（スマホ画面幅に合わせて1行6並びを固定）
+# チェックボックス（1行6並び）
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 show_nikkei = c1.checkbox("日経", value=True)
 show_ma5 = c2.checkbox("MA5", value=True)
@@ -181,7 +199,7 @@ else:
         unsafe_allow_html=True,
     )
 
-    # 3段チャート作成 (メイン, 出来高, RCI)
+    # チャート作成
     fig = make_subplots(
         rows=3,
         cols=1,
@@ -327,7 +345,7 @@ else:
     fig.update_layout(
         template="plotly_dark",
         height=660,
-        margin=dict(l=10, r=10, t=10, b=10),
+        margin=dict(l=5, r=5, t=10, b=10),
         xaxis_rangeslider_visible=False,
         showlegend=False,
         paper_bgcolor="#0d0d0d",
