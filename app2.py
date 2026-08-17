@@ -2,22 +2,88 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import requests
 import streamlit as st
 import yfinance as yf
 
 # 画面設定
 st.set_page_config(page_title="Stock Chart App", layout="wide")
 
-# ダークモード用のスタイリング調整
+# カスタムCSS（スマホでの横並び固定・文字サイズ調整）
 st.markdown(
     """
     <style>
     .stApp { background-color: #0d0d0d; color: #ffffff; }
     div[data-baseweb="input"] { background-color: #1a1a1a; color: #ffffff; }
+
+    /* スマホ画面でも6列のカラムを横並びに維持 */
+    [data-testid="stHorizontalBlock"] {
+        display: flex !important;
+        flex-direction: row !important;
+        flex-wrap: nowrap !important;
+        gap: 2px !important;
+    }
+    
+    [data-testid="column"] {
+        min-width: 0 !important;
+        flex: 1 1 0% !important;
+    }
+
+    /* チェックボックスの文字サイズ縮小・折り返し防止 */
+    [data-testid="stCheckbox"] {
+        padding: 0 !important;
+    }
+    [data-testid="stCheckbox"] label {
+        padding-left: 1px !important;
+        gap: 2px !important;
+    }
+    [data-testid="stCheckbox"] label span p {
+        font-size: 10px !important;
+        white-space: nowrap !important;
+        letter-spacing: -0.5px;
+    }
     </style>
 """,
     unsafe_allow_html=True,
 )
+
+
+# 銘柄コード・会社名からの自動検索関数
+def resolve_symbol(query):
+    query = query.strip()
+    if not query:
+        return "150A.T"
+
+    # すでに .T 付き
+    if query.endswith(".T"):
+        return query
+
+    # 数値のみ（例: 7203）または150A等の英数コード
+    if query.isdigit() or (len(query) == 4 and query[0].isdigit()):
+        return f"{query}.T"
+
+    # 銘柄名・企業名での検索 (Yahoo Finance Search API)
+    try:
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={requests.utils.quote(query)}&quotesCount=5&newsCount=0"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+        }
+        res = requests.get(url, headers=headers, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            quotes = data.get("quotes", [])
+            # 日本株 (.T) を優先的に検索
+            for q in quotes:
+                symbol = q.get("symbol", "")
+                if symbol.endswith(".T"):
+                    return symbol
+            # なければ最初の検索結果
+            if quotes:
+                return quotes[0].get("symbol", f"{query}.T")
+    except Exception:
+        pass
+
+    return f"{query}.T"
 
 
 # RCI (Rank Correlation Index) 計算関数
@@ -45,20 +111,19 @@ def fetch_data(symbol):
 # --- UI構成 ---
 col_input, col_btn = st.columns([3, 1])
 with col_input:
-    ticker_input = st.text_input(
-        "銘柄コード", value="150A", label_visibility="collapsed"
+    user_input = st.text_input(
+        "銘柄コードまたは銘柄名",
+        value="150A",
+        placeholder="例: 7203, トヨタ, 150A",
+        label_visibility="collapsed",
     ).strip()
 with col_btn:
     st.button("検索", use_container_width=True)
 
-# 4桁数値コードは日本株用 symbol (.T) に補正
-ticker_symbol = (
-    f"{ticker_input}.T"
-    if ticker_input.isdigit() or (len(ticker_input) == 4 and ticker_input[0].isdigit())
-    else ticker_input
-)
+# 銘柄検索・解析
+ticker_symbol = resolve_symbol(user_input)
 
-# 指標切り替えチェックボックス
+# 指標切り替えチェックボックス（横並び強制）
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 show_nikkei = c1.checkbox("日経", value=True)
 show_ma5 = c2.checkbox("MA5", value=True)
@@ -71,7 +136,7 @@ show_macd = c6.checkbox("MACD", value=False)
 df = fetch_data(ticker_symbol)
 
 if df.empty:
-    st.error(f"データを取得できませんでした: {ticker_input}")
+    st.error(f"データを取得できませんでした: {user_input} ({ticker_symbol})")
 else:
     # 銘柄ヘッダー情報表示
     latest = df.iloc[-1]
@@ -80,7 +145,7 @@ else:
     pct = (diff / prev["Close"]) * 100
 
     st.markdown(
-        f"**銘柄:** {ticker_input} &nbsp;&nbsp; **始値:** ¥{latest['Open']:.1f} &nbsp;&nbsp; **終値:** ¥{latest['Close']:.1f} (<span style='color:{'#00e676' if diff>=0 else '#ff5252'}'>{diff:+.1f} / {pct:+.2f}%</span>) &nbsp;&nbsp; **安値:** ¥{latest['Low']:.1f} &nbsp;&nbsp; **高値:** ¥{latest['High']:.1f}",
+        f"**銘柄:** {user_input} ({ticker_symbol}) &nbsp;&nbsp; **始値:** ¥{latest['Open']:.1f} &nbsp;&nbsp; **終値:** ¥{latest['Close']:.1f} (<span style='color:{'#00e676' if diff>=0 else '#ff5252'}'>{diff:+.1f} / {pct:+.2f}%</span>) &nbsp;&nbsp; **安値:** ¥{latest['Low']:.1f} &nbsp;&nbsp; **高値:** ¥{latest['High']:.1f}",
         unsafe_allow_html=True,
     )
 
@@ -226,17 +291,27 @@ else:
                 col=1,
             )
 
-    # チャート装飾設定
+    # チャート設定：指で触ってもドラッグ・拡大が動かないように固定
     fig.update_layout(
         template="plotly_dark",
-        height=720,
+        height=680,
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis_rangeslider_visible=False,
         showlegend=False,
         paper_bgcolor="#0d0d0d",
         plot_bgcolor="#0d0d0d",
+        dragmode=False,  # ドラッグ移動を無効化
     )
-    fig.update_xaxes(showgrid=True, gridcolor="#1f1f1f")
-    fig.update_yaxes(showgrid=True, gridcolor="#1f1f1f")
 
-    st.plotly_chart(fig, use_container_width=True)
+    # 軸の移動・ズームを固定（スマホでの画面上下スクロールを妨げない）
+    fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor="#1f1f1f")
+    fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor="#1f1f1f")
+
+    # タッチ操作の挙動制御
+    plotly_config = {
+        "scrollZoom": False,
+        "displayModeBar": False,
+        "doubleClick": False,
+    }
+
+    st.plotly_chart(fig, use_container_width=True, config=plotly_config)
