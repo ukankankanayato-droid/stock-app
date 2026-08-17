@@ -9,60 +9,59 @@ import yfinance as yf
 # 画面設定
 st.set_page_config(page_title="Stock Chart App", layout="wide")
 
-# カスタムCSS（スマホでの横並び固定・文字サイズ調整）
+# カスタムCSS（ダークモード & チェックボックス・入力欄の文字サイズ最適化）
 st.markdown(
     """
     <style>
     .stApp { background-color: #0d0d0d; color: #ffffff; }
-    div[data-baseweb="input"] { background-color: #1a1a1a; color: #ffffff; }
-
-    /* スマホ画面でも6列のカラムを横並びに維持 */
-    [data-testid="stHorizontalBlock"] {
-        display: flex !important;
-        flex-direction: row !important;
-        flex-wrap: nowrap !important;
-        gap: 2px !important;
-    }
-    
-    [data-testid="column"] {
-        min-width: 0 !important;
-        flex: 1 1 0% !important;
+    div[data-baseweb="input"], div[data-baseweb="select"] { 
+        background-color: #1a1a1a !important; 
+        color: #ffffff !important; 
     }
 
-    /* チェックボックスの文字サイズ縮小・折り返し防止 */
+    /* チェックボックスの文字サイズとはみ出し防止 */
     [data-testid="stCheckbox"] {
-        padding: 0 !important;
-    }
-    [data-testid="stCheckbox"] label {
-        padding-left: 1px !important;
-        gap: 2px !important;
+        padding: 2px 0 !important;
     }
     [data-testid="stCheckbox"] label span p {
-        font-size: 10px !important;
+        font-size: 13px !important;
         white-space: nowrap !important;
-        letter-spacing: -0.5px;
+        color: #ffffff !important;
     }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
+# 候補として表示する主要銘柄辞書（タップ・入力で絞り込み検索可能）
+STOCK_CANDIDATES = {
+    "150A | JSH": "150A.T",
+    "6986 | フタバ産業": "6986.T",
+    "7203 | トヨタ自動車": "7203.T",
+    "6758 | ソニーグループ": "6758.T",
+    "9984 | ソフトバンクグループ": "9984.T",
+    "8306 | 三菱UFJフィナンシャルG": "8306.T",
+    "6857 | アドバンテスト": "6857.T",
+    "8035 | 東京エレクトロン": "8035.T",
+    "7201 | 日産自動車": "7201.T",
+    "7267 | ホンダ": "7267.T",
+    "9104 | 商船三井": "9104.T",
+    "6146 | ディスコ": "6146.T",
+    "6501 | 日立製作所": "6501.T",
+    "🔍 リストにない銘柄を自由入力": "CUSTOM",
+}
 
-# 銘柄コード・会社名からの自動検索関数
+
+# 銘柄名・コード自動解決関数
 def resolve_symbol(query):
     query = query.strip()
     if not query:
         return "150A.T"
-
-    # すでに .T 付き
     if query.endswith(".T"):
         return query
-
-    # 数値のみ（例: 7203）または150A等の英数コード
     if query.isdigit() or (len(query) == 4 and query[0].isdigit()):
         return f"{query}.T"
 
-    # 銘柄名・企業名での検索 (Yahoo Finance Search API)
     try:
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={requests.utils.quote(query)}&quotesCount=5&newsCount=0"
         headers = {
@@ -70,19 +69,15 @@ def resolve_symbol(query):
         }
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
-            data = res.json()
-            quotes = data.get("quotes", [])
-            # 日本株 (.T) を優先的に検索
+            quotes = res.json().get("quotes", [])
             for q in quotes:
                 symbol = q.get("symbol", "")
                 if symbol.endswith(".T"):
                     return symbol
-            # なければ最初の検索結果
             if quotes:
                 return quotes[0].get("symbol", f"{query}.T")
     except Exception:
         pass
-
     return f"{query}.T"
 
 
@@ -109,34 +104,43 @@ def fetch_data(symbol):
 
 
 # --- UI構成 ---
-col_input, col_btn = st.columns([3, 1])
-with col_input:
-    user_input = st.text_input(
-        "銘柄コードまたは銘柄名",
-        value="150A",
-        placeholder="例: 7203, トヨタ, 150A",
-        label_visibility="collapsed",
+
+# 1. 銘柄選択（タップで候補一覧＆文字入力で検索・絞り込み可能）
+selected_option = st.selectbox(
+    "銘柄選択",
+    options=list(STOCK_CANDIDATES.keys()),
+    index=0,
+    label_visibility="collapsed",
+)
+
+if selected_option == "🔍 リストにない銘柄を自由入力":
+    custom_input = st.text_input(
+        "銘柄コードまたは銘柄名を入力",
+        value="",
+        placeholder="例: 7241, フタバ",
     ).strip()
-with col_btn:
-    st.button("検索", use_container_width=True)
+    ticker_symbol = resolve_symbol(custom_input) if custom_input else "150A.T"
+    display_title = custom_input if custom_input else "150A"
+else:
+    ticker_symbol = STOCK_CANDIDATES[selected_option]
+    display_title = selected_option
 
-# 銘柄検索・解析
-ticker_symbol = resolve_symbol(user_input)
+# 2. 指標チェックボックス（スマホ画面で溢れないよう 3列×2行 に配置）
+row1_col1, row1_col2, row1_col3 = st.columns(3)
+show_nikkei = row1_col1.checkbox("日経", value=True)
+show_ma5 = row1_col2.checkbox("MA5", value=True)
+show_ma25 = row1_col3.checkbox("MA25", value=True)
 
-# 指標切り替えチェックボックス（横並び強制）
-c1, c2, c3, c4, c5, c6 = st.columns(6)
-show_nikkei = c1.checkbox("日経", value=True)
-show_ma5 = c2.checkbox("MA5", value=True)
-show_ma25 = c3.checkbox("MA25", value=True)
-show_ma75 = c4.checkbox("MA75", value=True)
-show_rci = c5.checkbox("RCI", value=True)
-show_macd = c6.checkbox("MACD", value=False)
+row2_col1, row2_col2, row2_col3 = st.columns(3)
+show_ma75 = row2_col1.checkbox("MA75", value=True)
+show_rci = row2_col2.checkbox("RCI", value=True)
+show_macd = row2_col3.checkbox("MACD", value=False)
 
 # データロード
 df = fetch_data(ticker_symbol)
 
 if df.empty:
-    st.error(f"データを取得できませんでした: {user_input} ({ticker_symbol})")
+    st.error(f"データを取得できませんでした: {display_title}")
 else:
     # 銘柄ヘッダー情報表示
     latest = df.iloc[-1]
@@ -145,11 +149,14 @@ else:
     pct = (diff / prev["Close"]) * 100
 
     st.markdown(
-        f"**銘柄:** {user_input} ({ticker_symbol}) &nbsp;&nbsp; **始値:** ¥{latest['Open']:.1f} &nbsp;&nbsp; **終値:** ¥{latest['Close']:.1f} (<span style='color:{'#00e676' if diff>=0 else '#ff5252'}'>{diff:+.1f} / {pct:+.2f}%</span>) &nbsp;&nbsp; **安値:** ¥{latest['Low']:.1f} &nbsp;&nbsp; **高値:** ¥{latest['High']:.1f}",
+        f"**{display_title}** ({ticker_symbol})<br>"
+        f"**始値:** ¥{latest['Open']:.1f} &nbsp; **終値:** ¥{latest['Close']:.1f} "
+        f"(<span style='color:{'#00e676' if diff>=0 else '#ff5252'}'>{diff:+.1f} / {pct:+.2f}%</span>)<br>"
+        f"**安値:** ¥{latest['Low']:.1f} &nbsp; **高値:** ¥{latest['High']:.1f}",
         unsafe_allow_html=True,
     )
 
-    # 3段チャート作成 (メイン, 出来高, RCI)
+    # チャート描画部
     fig = make_subplots(
         rows=3,
         cols=1,
@@ -163,7 +170,7 @@ else:
         ],
     )
 
-    # 1. メインチャート：ローソク足
+    # ローソク足
     fig.add_trace(
         go.Candlestick(
             x=df.index,
@@ -232,7 +239,7 @@ else:
                 secondary_y=True,
             )
 
-    # 2. 出来高
+    # 出来高
     colors = [
         "#00e676" if c >= o else "#ff5252"
         for c, o in zip(df["Close"], df["Open"])
@@ -245,7 +252,7 @@ else:
         col=1,
     )
 
-    # 3. RCI
+    # RCI
     if show_rci:
         rci9 = calculate_rci(df["Close"], 9)
         rci26 = calculate_rci(df["Close"], 26)
@@ -291,27 +298,22 @@ else:
                 col=1,
             )
 
-    # チャート設定：指で触ってもドラッグ・拡大が動かないように固定
+    # レイアウト固定設定
     fig.update_layout(
         template="plotly_dark",
-        height=680,
+        height=660,
         margin=dict(l=10, r=10, t=10, b=10),
         xaxis_rangeslider_visible=False,
         showlegend=False,
         paper_bgcolor="#0d0d0d",
         plot_bgcolor="#0d0d0d",
-        dragmode=False,  # ドラッグ移動を無効化
+        dragmode=False,
     )
-
-    # 軸の移動・ズームを固定（スマホでの画面上下スクロールを妨げない）
     fig.update_xaxes(fixedrange=True, showgrid=True, gridcolor="#1f1f1f")
     fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor="#1f1f1f")
 
-    # タッチ操作の挙動制御
-    plotly_config = {
-        "scrollZoom": False,
-        "displayModeBar": False,
-        "doubleClick": False,
-    }
-
-    st.plotly_chart(fig, use_container_width=True, config=plotly_config)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"scrollZoom": False, "displayModeBar": False},
+    )
